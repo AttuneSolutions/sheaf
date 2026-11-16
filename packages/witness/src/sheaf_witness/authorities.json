@@ -1,0 +1,52 @@
+{
+  "checked": "2026-11-16",
+  "note": "Free authorities a mandate may name. Each was asked for a token over a random imprint on the date checked. Jurisdiction is the country of the operating company named in the signing certificate; parent and hosting are what the operator states, so a person can judge whether one legal order reaches several (MIO-STD-01 5.3.2).",
+  "default": ["freetsa", "sectigo", "digicert"],
+  "authorities": [
+    {
+      "authority": "freetsa",
+      "name": "FreeTSA",
+      "url": "https://freetsa.org/tsr",
+      "jurisdiction": "DE",
+      "operator": "FreeTSA, an independent non-profit project",
+      "parent": "none",
+      "hosting": "RackNerd, a US company; the hosting country is not stated",
+      "terms": "https://freetsa.org/index_en.php",
+      "practice_statement": "https://freetsa.org/freetsa_cps.html",
+      "audit_reference": "none published",
+      "free_use": "commercial use allowed; best effort, no SLA; 1 request per second per IP",
+      "min_interval_seconds": 1,
+      "roots": ["roots/freetsa.der"]
+    },
+    {
+      "authority": "sectigo",
+      "name": "Sectigo Public Time Stamping",
+      "url": "https://timestamp.sectigo.com",
+      "jurisdiction": "GB",
+      "operator": "Sectigo Limited",
+      "parent": "Sectigo group, run from the US",
+      "hosting": "not stated",
+      "terms": "https://timestamp.sectigo.com",
+      "practice_statement": "https://www.sectigo.com/legal",
+      "audit_reference": "not checked; see https://www.sectigo.com/legal",
+      "free_use": "published without terms; asks for 15 s or more between scripted requests",
+      "min_interval_seconds": 15,
+      "roots": ["roots/sectigo.der"]
+    },
+    {
+      "authority": "digicert",
+      "name": "DigiCert Timestamp",
+      "url": "http://timestamp.digicert.com",
+      "jurisdiction": "US",
+      "operator": "DigiCert, Inc.",
+      "parent": "DigiCert, Inc.",
+      "hosting": "not stated",
+      "terms": "https://knowledge.digicert.com/general-information/rfc3161-compliant-time-stamp-authority-server",
+      "practice_statement": "https://www.digicert.com/legal-repository",
+      "audit_reference": "not checked; see https://www.digicert.com/legal-repository",
+      "free_use": "published without terms; HTTP only, which is safe because tokens are signed",
+      "min_interval_seconds": 1,
+      "roots": ["roots/digicert.der"]
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.artefact.attached/1",
+  "title": "artefact.attached",
+  "description": "One artefact, already uploaded, and why it is in the dossier",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+            }
+          ],
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.notice/1",
+  "title": "notice",
+  "description": "Failure, retry, pause, restart, or an authority that did not answer. In a dossier or at chain level",
+  "properties": {
+    "artefacts": {
+      "maxItems": 0
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "detail"
+      ],
+      "properties": {
+        "event": {
+          "enum": [
+            "failure",
+            "retry",
+            "pause",
+            "resume",
+            "restart",
+            "authority_unavailable"
+          ]
+        },
+        "detail": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+        },
+        "authority": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+        }
+      },
+      "if": {
+        "properties": {
+          "event": {
+            "const": "authority_unavailable"
+          }
+        },
+        "required": [
+          "event"
+        ]
+      },
+      "then": {
+        "required": [
+          "authority"
+        ]
+      },
+      "else": {
+        "properties": {
+          "authority": {
+            "not": {}
+          }
+        }
+      }
+    }
+  }
+}

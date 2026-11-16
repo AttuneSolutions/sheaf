@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.defs/1",
+  "title": "Definitions shared by the sheaf/1 schemas",
+  "$defs": {
+    "slug": {
+      "description": "Lower-case letters and digits in hyphen-separated words. Safe in a Blob path and an index tag",
+      "type": "string",
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "chain": {
+      "description": "{tenant}/{workflow}",
+      "type": "string",
+      "maxLength": 127,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "dossier_id": {
+      "description": "Letters and digits in words joined by a hyphen or underscore. Never embeds the subject (5.7)",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9]+([_-][A-Za-z0-9]+)*$"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "entry_digest": {
+      "description": "A digest of canonical JSON: sha256: and 64 lower-case hex digits (5.2)",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artefact_digest": {
+      "description": "A digest of stored bytes: 64 lower-case hex digits (5.2)",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 date-time in UTC, written with Z",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "date": {
+      "description": "RFC 3339 full-date",
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "tag_value": {
+      "description": "A value that can also be a Blob index tag (4): 1 to 256 characters from the set Azure allows",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9 +./:=_-]+$"
+    },
+    "identity": {
+      "description": "A workload identity or user account, or a keyed pseudonym of one (5.7)",
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._@:+/=-]*$"
+    },
+    "role": {
+      "description": "an app role value, as in the roles claim of an Entra ID token",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]*$"
+    },
+    "label": {
+      "description": "A short single-line string",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "text": {
+      "description": "Free text",
+      "type": "string",
+      "maxLength": 4096
+    },
+    "jurisdiction": {
+      "description": "ISO 3166-1 alpha-2 country code",
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+    },
+    "schema_id": {
+      "description": "A registered schema, name/major (6)",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[a-z0-9]+([.-][a-z0-9]+)*/[1-9][0-9]*$"
+    },
+    "kind": {
+      "type": "string",
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]+(\\.[a-z0-9]+)+$"
+    },
+    "media_type": {
+      "description": "type/subtype in lower case, without parameters",
+      "type": "string",
+      "maxLength": 127,
+      "pattern": "^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$"
+    },
+    "sensitivity": {
+      "enum": [
+        "client_pii",
+        "staff_pii",
+        "none"
+      ]
+    },
+    "key_id": {
+      "description": "A witness key: Key Vault key name / version",
+      "type": "string",
+      "maxLength": 192,
+      "pattern": "^[A-Za-z0-9-]{1,127}/[A-Za-z0-9]{1,64}$"
+    },
+    "person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "person"
+        },
+        "id": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/identity"
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "system",
+            "person"
+          ]
+        },
+        "id": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/identity"
+        },
+        "version": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/version"
+        },
+        "role": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/role"
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "system"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "version"
+        ]
+      },
+      "else": {
+        "properties": {
+          "version": {
+            "not": {}
+          }
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system",
+        "object",
+        "id"
+      ],
+      "properties": {
+        "system": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/tag_value"
+        },
+        "object": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/tag_value"
+        },
+        "id": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/tag_value"
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "min_until"
+      ],
+      "properties": {
+        "class": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+        },
+        "min_until": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/date"
+        }
+      }
+    },
+    "artefact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "kind",
+        "sha256",
+        "bytes",
+        "media_type",
+        "sensitivity"
+      ],
+      "properties": {
+        "role": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+        },
+        "kind": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/kind"
+        },
+        "sha256": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+        },
+        "bytes": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/count"
+        },
+        "media_type": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/media_type"
+        },
+        "sensitivity": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/sensitivity"
+        },
+        "rendition_of": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "document.rendition"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "rendition_of"
+        ]
+      },
+      "else": {
+        "properties": {
+          "rendition_of": {
+            "not": {}
+          }
+        }
+      }
+    }
+  }
+}

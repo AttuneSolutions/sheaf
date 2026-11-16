@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.record-snapshot/1",
+  "title": "A record as read from a source system (kind record.snapshot, 6)",
+  "description": "Field values are as the source returned them; artefacts, unlike entries, may hold fractions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "system",
+    "object",
+    "id",
+    "fields",
+    "retrieved_at"
+  ],
+  "properties": {
+    "system": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+    },
+    "object": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+    },
+    "id": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+    },
+    "version": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+    },
+    "fields": {
+      "type": "object"
+    },
+    "retrieved_at": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/timestamp"
+    },
+    "query": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+    }
+  }
+}

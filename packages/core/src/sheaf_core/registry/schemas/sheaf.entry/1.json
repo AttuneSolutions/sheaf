@@ -1,0 +1,405 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry/1",
+  "title": "A committed sheaf/1 entry (5.1)",
+  "description": "The caller's fields, plus the chain fields only the gateway sets",
+  "$ref": "#/$defs/caller_fields",
+  "properties": {
+    "seq": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/seq"
+    },
+    "prev": {
+      "if": {
+        "type": "string"
+      },
+      "then": {
+        "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+      },
+      "else": {
+        "type": "null"
+      }
+    },
+    "committed_at": {
+      "description": "The gateway's clock, in UTC with milliseconds (5.1)",
+      "allOf": [
+        {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/timestamp"
+        }
+      ],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "hash": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+    }
+  },
+  "required": [
+    "seq",
+    "prev",
+    "committed_at",
+    "hash"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "seq": {
+            "const": 1
+          }
+        },
+        "required": [
+          "seq"
+        ]
+      },
+      "then": {
+        "properties": {
+          "prev": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "prev": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "unevaluatedProperties": false,
+  "$defs": {
+    "caller_fields": {
+      "type": "object",
+      "required": [
+        "spec",
+        "tenant",
+        "chain",
+        "dossier",
+        "type",
+        "observed_at",
+        "actor",
+        "artefacts",
+        "body"
+      ],
+      "properties": {
+        "spec": {
+          "const": "sheaf/1"
+        },
+        "tenant": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+        },
+        "chain": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/chain"
+        },
+        "dossier": {
+          "description": "null for a chain-level entry (5.3)",
+          "if": {
+            "type": "string"
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/dossier_id"
+          },
+          "else": {
+            "type": "null"
+          }
+        },
+        "type": {
+          "enum": [
+            "dossier.opened",
+            "source.read",
+            "artefact.attached",
+            "ai.exchange",
+            "trace.recorded",
+            "finding.drafted",
+            "output.produced",
+            "decision.recorded",
+            "config.changed",
+            "correction",
+            "notice",
+            "dossier.sealed",
+            "witness.daily",
+            "witness.interim",
+            "retention.expired"
+          ]
+        },
+        "observed_at": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/timestamp"
+        },
+        "actor": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/actor"
+        },
+        "subject": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/subject"
+        },
+        "artefacts": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_ref"
+          }
+        },
+        "body": {
+          "type": "object"
+        },
+        "retention": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/retention"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dossier": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "dossier"
+            ]
+          },
+          "then": {
+            "properties": {
+              "subject": {
+                "not": {}
+              },
+              "retention": {
+                "not": {}
+              }
+            }
+          },
+          "else": {
+            "required": [
+              "subject",
+              "retention"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "dossier.opened"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.dossier.opened/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "source.read"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.source.read/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "artefact.attached"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.artefact.attached/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "ai.exchange"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.ai.exchange/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "trace.recorded"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.trace.recorded/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "finding.drafted"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.finding.drafted/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "output.produced"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.output.produced/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "decision.recorded"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.decision.recorded/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "config.changed"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.config.changed/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "correction"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.correction/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "notice"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.notice/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "dossier.sealed"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.dossier.sealed/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "witness.daily"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.witness.daily/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "witness.interim"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.witness.interim/1"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "retention.expired"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "$ref": "urn:sheaf:sheaf.entry.retention.expired/1"
+          }
+        }
+      ]
+    }
+  }
+}

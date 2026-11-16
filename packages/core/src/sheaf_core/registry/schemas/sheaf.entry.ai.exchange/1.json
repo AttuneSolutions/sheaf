@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.ai.exchange/1",
+  "title": "ai.exchange",
+  "description": "One request to a model and its response, both as raw artefacts",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "maxItems": 2,
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "request"
+              },
+              "kind": {
+                "const": "ai.exchange.raw"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "role": {
+                "const": "response"
+              },
+              "kind": {
+                "const": "ai.exchange.raw"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "region",
+        "deployment",
+        "model",
+        "model_version",
+        "parameters",
+        "usage",
+        "finish_reason",
+        "content_filter"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+        },
+        "region": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+        },
+        "deployment": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+        },
+        "model": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+        },
+        "model_version": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "usage": {
+          "type": "object",
+          "required": [
+            "input_tokens",
+            "output_tokens"
+          ],
+          "properties": {
+            "input_tokens": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/count"
+            },
+            "output_tokens": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/count"
+            }
+          },
+          "additionalProperties": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/count"
+          }
+        },
+        "finish_reason": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+        },
+        "content_filter": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

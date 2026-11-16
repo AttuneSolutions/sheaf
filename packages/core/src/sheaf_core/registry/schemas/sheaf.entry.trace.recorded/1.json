@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.trace.recorded/1",
+  "title": "trace.recorded",
+  "description": "One OpenTelemetry trace",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "properties": {
+          "role": {
+            "const": "trace"
+          },
+          "kind": {
+            "const": "trace.otel"
+          }
+        }
+      }
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trace_id",
+        "span_count"
+      ],
+      "properties": {
+        "trace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "span_count": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/seq"
+        }
+      }
+    }
+  }
+}

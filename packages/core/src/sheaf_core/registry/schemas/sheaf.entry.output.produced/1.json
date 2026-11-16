@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.output.produced/1",
+  "title": "output.produced",
+  "description": "Where an output went and its fingerprint. The output may be attached",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "maxItems": 1,
+      "items": {
+        "properties": {
+          "role": {
+            "const": "output"
+          }
+        }
+      }
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "destination",
+        "sha256"
+      ],
+      "properties": {
+        "destination": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "system",
+            "location"
+          ],
+          "properties": {
+            "system": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+            },
+            "location": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+            }
+          }
+        },
+        "sha256": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+        }
+      }
+    }
+  }
+}

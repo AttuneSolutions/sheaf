@@ -1,0 +1,38 @@
+[project]
+name = "sheaf"
+version = "0.0.0"
+description = "Workspace root for Sheaf: the evidence dossier standard, write gateway, witness and verifier"
+requires-python = ">=3.12"
+dependencies = ["sheaf-core", "sheaf-gateway", "sheaf-witness"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8",
+    "ruff>=0.7",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+sheaf-core = { workspace = true }
+sheaf-gateway = { workspace = true }
+sheaf-witness = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sheaf_core", "sheaf_gateway", "sheaf_witness"]

@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --locked --all-packages
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Tests
+        run: uv run pytest -q
+
+  image:
+    # A smoke build on the runner's own architecture. The multi-arch build that is published
+    # lives in release.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # A mandate records the image digest (standard 5.6, 7.1), so anyone must be able to
+      # rebuild the same digest from the same commit. Build twice without the layer cache and
+      # compare. Buildx's own provenance and SBOM are off: they carry build times and would
+      # change the digest.
+      - name: Build twice and compare digests
+        run: |
+          set -euo pipefail
+          epoch=$(git log -1 --format=%ct)
+          for run in a b; do
+            docker buildx build --platform linux/amd64 --no-cache \
+              --provenance=false --sbom=false \
+              --build-arg SOURCE_DATE_EPOCH="$epoch" \
+              --output "type=oci,dest=/tmp/sheaf-$run.tar,rewrite-timestamp=true" .
+            tar -xOf "/tmp/sheaf-$run.tar" index.json | jq -r '.manifests[0].digest' > "/tmp/$run.digest"
+          done
+          echo "first:  $(cat /tmp/a.digest)"
+          echo "second: $(cat /tmp/b.digest)"
+          cmp /tmp/a.digest /tmp/b.digest
+
+      - name: Load the image
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            --load -t sheaf:ci .
+
+      # In memory, with no Entra settings, the gateway starts and refuses every caller.
+      - name: Boot the gateway and check it refuses an unauthenticated caller
+        run: |
+          set -euo pipefail
+          docker run -d --name sheaf-ci -p 8080:8080 \
+            -e SHEAF_STORE=memory -e SHEAF_IDENTIFIERS=clear \
+            -e SHEAF_CHAIN=acme/case-review -e SHEAF_BOOTSTRAP_CALLER=acme-approver-1 \
+            sheaf:ci
+          for attempt in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/me || true)
+            [ "$status" != "000" ] && break
+            sleep 1
+          done
+          echo "GET /v1/me answered $status"
+          test "$status" = "401"
+
+      - name: The witness job is in the same image
+        run: docker run --rm --entrypoint python sheaf:ci -c "import sheaf_witness.__main__"
+
+      - name: Container logs
+        if: always()
+        run: docker logs sheaf-ci || true

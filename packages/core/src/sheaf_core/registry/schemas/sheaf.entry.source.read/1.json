@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.source.read/1",
+  "title": "source.read",
+  "description": "A read from a source system. Under the reference policy no artefact; under copy, the source itself",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "maxItems": 1,
+      "items": {
+        "properties": {
+          "role": {
+            "const": "source"
+          }
+        }
+      }
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "read",
+        "sha256"
+      ],
+      "properties": {
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "system",
+            "id"
+          ],
+          "properties": {
+            "system": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+            },
+            "object": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+            },
+            "id": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+            },
+            "version": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+            }
+          }
+        },
+        "query": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+        },
+        "read": {
+          "allOf": [
+            {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+            }
+          ],
+          "minLength": 1,
+          "description": "what was read"
+        },
+        "sha256": {
+          "description": "fingerprint of what was read",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.decision.recorded/1",
+  "title": "decision.recorded",
+  "description": "A person's decision on something in the dossier, named by its fingerprint",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "actor": {
+      "properties": {
+        "kind": {
+          "const": "person"
+        }
+      }
+    },
+    "artefacts": {
+      "maxItems": 0
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "decided",
+        "reason"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "approve",
+            "approve_with_edits",
+            "reject",
+            "escalate"
+          ]
+        },
+        "decided": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+        },
+        "reason": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+        },
+        "edits": {
+          "allOf": [
+            {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+            }
+          ],
+          "minLength": 1
+        }
+      },
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "approve_with_edits"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "then": {
+        "required": [
+          "edits"
+        ]
+      },
+      "else": {
+        "properties": {
+          "edits": {
+            "not": {}
+          }
+        }
+      }
+    }
+  }
+}

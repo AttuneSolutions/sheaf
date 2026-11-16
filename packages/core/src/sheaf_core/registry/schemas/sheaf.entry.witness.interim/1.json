@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.witness.interim/1",
+  "title": "witness.interim",
+  "description": "The body is the witness itself (5.2), exactly as signed and stamped",
+  "properties": {
+    "dossier": {
+      "type": "null"
+    },
+    "artefacts": {
+      "maxItems": 0
+    },
+    "body": {
+      "$ref": "urn:sheaf:sheaf.witness/1",
+      "properties": {
+        "witness": {
+          "const": "interim"
+        }
+      }
+    }
+  }
+}

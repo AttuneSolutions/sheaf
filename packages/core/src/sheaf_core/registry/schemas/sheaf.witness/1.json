@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.witness/1",
+  "title": "A witness (5.2)",
+  "description": "Signed over its RFC 8785 form without signature and time_attestation; its imprint is over its RFC 8785 form without time_attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec",
+    "chain",
+    "witness",
+    "last_seq",
+    "last_hash",
+    "key_id",
+    "signature",
+    "time_attestation"
+  ],
+  "properties": {
+    "spec": {
+      "const": "sheaf/1"
+    },
+    "chain": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/chain"
+    },
+    "witness": {
+      "enum": [
+        "daily",
+        "interim"
+      ]
+    },
+    "interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/timestamp"
+        },
+        "to": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/timestamp"
+        }
+      }
+    },
+    "last_seq": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/seq"
+    },
+    "last_hash": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+    },
+    "key_id": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/key_id"
+    },
+    "signature": {
+      "description": "base64url without padding",
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "time_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "imprint",
+        "imprint_over",
+        "authorities",
+        "attested_count",
+        "attested_jurisdictions",
+        "distinct_jurisdictions"
+      ],
+      "properties": {
+        "imprint": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+        },
+        "imprint_over": {
+          "const": "RFC 8785 canonical witness without time_attestation"
+        },
+        "authorities": {
+          "description": "every authority asked, attested or not",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "authority",
+              "jurisdiction",
+              "obtained"
+            ],
+            "properties": {
+              "authority": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+              },
+              "jurisdiction": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/jurisdiction"
+              },
+              "obtained": {
+                "type": "boolean"
+              },
+              "qualified": {
+                "description": "read from the token's qualified statement, never from configuration",
+                "type": "boolean"
+              },
+              "gen_time": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/timestamp"
+              },
+              "token_sha256": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+              },
+              "unavailable_reason": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+              }
+            },
+            "if": {
+              "properties": {
+                "obtained": {
+                  "const": true
+                }
+              },
+              "required": [
+                "obtained"
+              ]
+            },
+            "then": {
+              "required": [
+                "qualified",
+                "gen_time",
+                "token_sha256"
+              ],
+              "properties": {
+                "unavailable_reason": {
+                  "not": {}
+                }
+              }
+            },
+            "else": {
+              "required": [
+                "unavailable_reason"
+              ],
+              "properties": {
+                "qualified": {
+                  "not": {}
+                },
+                "gen_time": {
+                  "not": {}
+                },
+                "token_sha256": {
+                  "not": {}
+                }
+              }
+            }
+          }
+        },
+        "attested_count": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/count"
+        },
+        "attested_jurisdictions": {
+          "description": "sorted, without repeats",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/jurisdiction"
+          }
+        },
+        "distinct_jurisdictions": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "witness": {
+        "const": "daily"
+      }
+    },
+    "required": [
+      "witness"
+    ]
+  },
+  "then": {
+    "required": [
+      "interval"
+    ]
+  },
+  "else": {
+    "properties": {
+      "interval": {
+        "not": {}
+      }
+    }
+  }
+}

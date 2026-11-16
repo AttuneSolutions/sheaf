@@ -1,0 +1,480 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.mandate/1",
+  "title": "A workflow's mandate (5.6)",
+  "description": "Everything that fixes what a workflow may do. Each top-level property other than $schema, chain and version is a part, with its own digest in config.changed",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "chain",
+    "version",
+    "policy",
+    "instructions",
+    "schemas",
+    "models",
+    "registry",
+    "retention",
+    "witness_interval",
+    "witness_key",
+    "authorities",
+    "personal_data",
+    "gateway"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "sheaf.mandate/1"
+    },
+    "chain": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/chain"
+    },
+    "version": {
+      "$ref": "urn:sheaf:sheaf.defs/1#/$defs/version"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callers",
+        "roles",
+        "kinds",
+        "source_capture",
+        "sensitivity"
+      ],
+      "properties": {
+        "callers": {
+          "description": "who may write which entry types; witness entries come only from witness_key.identity",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "types"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/identity"
+              },
+              "types": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "dossier.opened",
+                    "source.read",
+                    "artefact.attached",
+                    "ai.exchange",
+                    "trace.recorded",
+                    "finding.drafted",
+                    "output.produced",
+                    "decision.recorded",
+                    "config.changed",
+                    "correction",
+                    "notice",
+                    "dossier.sealed",
+                    "retention.expired"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "roles": {
+          "description": "app roles that grant entry types to any caller whose token holds them; an entry written under a role names it in actor.role",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "role",
+              "types"
+            ],
+            "properties": {
+              "role": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/role"
+              },
+              "types": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "dossier.opened",
+                    "source.read",
+                    "artefact.attached",
+                    "ai.exchange",
+                    "trace.recorded",
+                    "finding.drafted",
+                    "output.produced",
+                    "decision.recorded",
+                    "config.changed",
+                    "correction",
+                    "notice",
+                    "dossier.sealed",
+                    "retention.expired"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "kinds": {
+          "description": "the kinds this workflow may store, each with a size limit no larger than the registry's",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/kind"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "max_bytes"
+            ],
+            "properties": {
+              "max_bytes": {
+                "allOf": [
+                  {
+                    "$ref": "urn:sheaf:sheaf.defs/1#/$defs/count"
+                  }
+                ],
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "source_capture": {
+          "enum": [
+            "reference",
+            "copy"
+          ]
+        },
+        "sensitivity": {
+          "description": "the directory roles that may open an artefact of each sensitivity (8)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "client_pii",
+            "staff_pii",
+            "none"
+          ],
+          "properties": {
+            "client_pii": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+              }
+            },
+            "staff_pii": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+              }
+            },
+            "none": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+              }
+            }
+          }
+        }
+      }
+    },
+    "instructions": {
+      "description": "the instructions and rules as given to the model, each a text.markdown artefact attached to the config.changed",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "sha256"
+        ],
+        "properties": {
+          "name": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+          },
+          "sha256": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+          }
+        }
+      }
+    },
+    "schemas": {
+      "description": "the tenant's own JSON Schemas, such as a findings schema, each a schema.json artefact attached to the config.changed whose $id is urn:sheaf: and the id",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "sha256"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*\\.[a-z0-9][a-z0-9.-]*/[1-9][0-9]*$"
+          },
+          "sha256": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "region",
+          "deployment",
+          "model",
+          "model_version",
+          "parameters"
+        ],
+        "properties": {
+          "provider": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+          },
+          "region": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+          },
+          "deployment": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+          },
+          "model": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+          },
+          "model_version": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+          },
+          "parameters": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classes"
+      ],
+      "properties": {
+        "classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "class",
+              "period"
+            ],
+            "properties": {
+              "class": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+              },
+              "period": {
+                "description": "ISO 8601 duration in whole years, months or days",
+                "type": "string",
+                "pattern": "^P(?=[0-9])([0-9]+Y)?([0-9]+M)?([0-9]+D)?$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "witness_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interval",
+        "interim_after_sealed"
+      ],
+      "properties": {
+        "interval": {
+          "const": "daily"
+        },
+        "interim_after_sealed": {
+          "description": "11.2: also witness after each dossier.sealed",
+          "type": "boolean"
+        }
+      }
+    },
+    "witness_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key_id",
+        "algorithm",
+        "public_key_sha256",
+        "identity"
+      ],
+      "properties": {
+        "key_id": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/key_id"
+        },
+        "algorithm": {
+          "const": "ES256"
+        },
+        "public_key_sha256": {
+          "description": "sha256 of trust/witness-keys/{key_id}.pem",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+        },
+        "identity": {
+          "description": "the witness identity: the only caller that may submit witness entries",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/identity"
+        }
+      }
+    },
+    "authorities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "list",
+        "assessment"
+      ],
+      "properties": {
+        "list": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "authority",
+              "name",
+              "url",
+              "jurisdiction",
+              "roots",
+              "practice_statement",
+              "audit_reference"
+            ],
+            "properties": {
+              "authority": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+              },
+              "name": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+              },
+              "url": {
+                "allOf": [
+                  {
+                    "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+                  }
+                ],
+                "pattern": "^https?://"
+              },
+              "jurisdiction": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/jurisdiction"
+              },
+              "roots": {
+                "description": "sha256 of each root and intermediate certificate stored in trust/tsa/{authority}/",
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+                }
+              },
+              "practice_statement": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+              },
+              "audit_reference": {
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+              }
+            }
+          }
+        },
+        "assessment": {
+          "description": "a person's assessment against MIO-STD-01 5.3.2; recorded, never checked",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "by",
+            "date",
+            "statement"
+          ],
+          "properties": {
+            "by": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/person"
+            },
+            "date": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/date"
+            },
+            "statement": {
+              "allOf": [
+                {
+                  "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+                }
+              ],
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "personal_data": {
+      "description": "11.4: staff and subject identifiers in clear or as keyed pseudonyms, and the basis",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identifiers",
+        "basis"
+      ],
+      "properties": {
+        "identifiers": {
+          "enum": [
+            "clear",
+            "pseudonymised"
+          ]
+        },
+        "basis": {
+          "allOf": [
+            {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+            }
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image"
+      ],
+      "properties": {
+        "image": {
+          "description": "the gateway image digest (7.1)",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+        }
+      }
+    }
+  }
+}

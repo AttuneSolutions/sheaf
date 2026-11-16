@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.retention.expired/1",
+  "title": "retention.expired",
+  "description": "Written before any lifecycle deletion. Identifiers and digests only (5.7)",
+  "properties": {
+    "dossier": {
+      "type": "null"
+    },
+    "artefacts": {
+      "maxItems": 0
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "min_until",
+        "policy_version",
+        "dossiers",
+        "artefacts",
+        "approved_by"
+      ],
+      "properties": {
+        "class": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+        },
+        "min_until": {
+          "description": "the latest min_until of any listed dossier",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/date"
+        },
+        "policy_version": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/version"
+        },
+        "dossiers": {
+          "type": "array",
+          "maxItems": 10000,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/dossier_id"
+          }
+        },
+        "artefacts": {
+          "type": "array",
+          "maxItems": 10000,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+          }
+        },
+        "approved_by": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/person"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "dossiers": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "artefacts": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

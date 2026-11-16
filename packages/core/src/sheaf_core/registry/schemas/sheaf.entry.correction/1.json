@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.correction/1",
+  "title": "correction",
+  "description": "Supersedes an earlier entry; never edits it",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "corrects",
+        "reason"
+      ],
+      "properties": {
+        "corrects": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+        },
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+            }
+          ],
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

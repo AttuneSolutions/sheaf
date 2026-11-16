@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.draft/1",
+  "title": "An entry as a caller submits it (5.1, 7.2)",
+  "description": "Everything except seq, prev, committed_at and hash, which only the gateway sets",
+  "$ref": "urn:sheaf:sheaf.entry/1#/$defs/caller_fields",
+  "unevaluatedProperties": false
+}

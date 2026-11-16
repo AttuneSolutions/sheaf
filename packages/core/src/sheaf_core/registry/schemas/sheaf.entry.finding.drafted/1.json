@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.finding.drafted/1",
+  "title": "finding.drafted",
+  "description": "A findings artefact, which validates against the schema it declares",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "properties": {
+          "role": {
+            "const": "findings"
+          },
+          "kind": {
+            "const": "data.json"
+          }
+        }
+      }
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema"
+      ],
+      "properties": {
+        "schema": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/schema_id"
+        }
+      }
+    }
+  }
+}

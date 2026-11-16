@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.dossier.sealed/1",
+  "title": "dossier.sealed",
+  "description": "Last entry in a dossier",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "maxItems": 0
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "entries",
+        "artefacts"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "abandoned"
+          ]
+        },
+        "entries": {
+          "description": "entries in the dossier, this one included",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/seq"
+        },
+        "artefacts": {
+          "description": "distinct artefacts the dossier's entries refer to",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/count"
+        }
+      }
+    }
+  }
+}

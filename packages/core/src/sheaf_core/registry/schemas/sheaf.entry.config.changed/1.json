@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.config.changed/1",
+  "title": "config.changed",
+  "description": "A new mandate (5.6), whole: a sheaf.mandate/1 data.json and every instructions text it names",
+  "properties": {
+    "dossier": {
+      "type": "null"
+    },
+    "artefacts": {
+      "minItems": 1,
+      "items": {
+        "anyOf": [
+          {
+            "properties": {
+              "role": {
+                "const": "mandate"
+              },
+              "kind": {
+                "const": "data.json"
+              }
+            }
+          },
+          {
+            "properties": {
+              "role": {
+                "const": "instructions"
+              },
+              "kind": {
+                "const": "text.markdown"
+              }
+            }
+          },
+          {
+            "properties": {
+              "role": {
+                "const": "schema"
+              },
+              "kind": {
+                "const": "schema.json"
+              }
+            }
+          }
+        ]
+      },
+      "contains": {
+        "properties": {
+          "role": {
+            "const": "mandate"
+          }
+        }
+      },
+      "minContains": 1,
+      "maxContains": 1
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "previous",
+        "changed",
+        "mandate",
+        "parts",
+        "approved_by",
+        "reason"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/version"
+        },
+        "previous": {
+          "description": "null only for the first entry of the chain",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "config"
+          ],
+          "properties": {
+            "version": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/version"
+            },
+            "config": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            }
+          }
+        },
+        "changed": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "policy",
+              "instructions",
+              "schemas",
+              "models",
+              "registry",
+              "retention",
+              "witness_interval",
+              "witness_key",
+              "authorities",
+              "personal_data",
+              "gateway"
+            ]
+          }
+        },
+        "mandate": {
+          "description": "sha256 of the mandate document: the digest of the whole",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/artefact_digest"
+        },
+        "parts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy",
+            "instructions",
+            "schemas",
+            "models",
+            "registry",
+            "retention",
+            "witness_interval",
+            "witness_key",
+            "authorities",
+            "personal_data",
+            "gateway"
+          ],
+          "properties": {
+            "policy": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "instructions": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "schemas": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "models": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "registry": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "retention": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "witness_interval": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "witness_key": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "authorities": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "personal_data": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            },
+            "gateway": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            }
+          }
+        },
+        "approved_by": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/person"
+        },
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/text"
+            }
+          ],
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sheaf:sheaf.entry.dossier.opened/1",
+  "title": "dossier.opened",
+  "description": "First entry in a dossier. The envelope's subject and retention hold for every entry in it",
+  "properties": {
+    "dossier": {
+      "type": "string"
+    },
+    "artefacts": {
+      "maxItems": 0
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_version",
+        "trigger",
+        "mandate",
+        "source_capture"
+      ],
+      "properties": {
+        "workflow_version": {
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/version"
+        },
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/slug"
+            },
+            "ref": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+            }
+          }
+        },
+        "mandate": {
+          "description": "hash of the config.changed entry whose mandate is in force",
+          "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+        },
+        "source_capture": {
+          "enum": [
+            "reference",
+            "copy"
+          ]
+        }
+      }
+    }
+  }
+}
