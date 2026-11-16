@@ -96,14 +96,29 @@ az storage container immutability-policy create -g <rg> --account-name <account>
   --period 365
 ```
 
-**Tiering:** a lifecycle rule moves blobs to Cold after about 90 days (4). Moving tier is allowed
-under immutability.
+**Lifecycle rules:**
+
+- Blobs in `evidence` move to Cold after about 90 days (4). Moving tier is allowed under
+  immutability.
+- The gateway's receipts for idempotency keys, in `gateway-state/receipts/`, are deleted after 30
+  days, the least the standard promises callers (7.2).
+- Earlier versions in `gateway-state` are deleted after a week. Versioning is on for the whole
+  account, so every journal write leaves one behind.
 
 ```json
-{ "rules": [ { "name": "cold-after-90-days", "enabled": true, "type": "Lifecycle",
-  "definition": {
-    "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["evidence/"] },
-    "actions": { "baseBlob": { "tierToCold": { "daysAfterCreationGreaterThan": 90 } } } } } ] }
+{ "rules": [
+  { "name": "cold-after-90-days", "enabled": true, "type": "Lifecycle",
+    "definition": {
+      "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["evidence/"] },
+      "actions": { "baseBlob": { "tierToCold": { "daysAfterCreationGreaterThan": 90 } } } } },
+  { "name": "receipts-after-30-days", "enabled": true, "type": "Lifecycle",
+    "definition": {
+      "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["gateway-state/receipts/"] },
+      "actions": { "baseBlob": { "delete": { "daysAfterModificationGreaterThan": 30 } } } } },
+  { "name": "gateway-state-versions-after-7-days", "enabled": true, "type": "Lifecycle",
+    "definition": {
+      "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["gateway-state/"] },
+      "actions": { "version": { "delete": { "daysAfterCreationGreaterThan": 7 } } } } } ] }
 ```
 
 ```bash
@@ -463,8 +478,5 @@ retention period, and a mandate that cannot be witnessed never applies.
   as a new image, policy or witness key, is made against the API by hand.
 - **The verifier** (9).
 - **Events to readers** (7.2 step 4): the gateway publishes none yet.
-- **Idempotency receipts** are kept in memory, so a caller's retry that arrives after a gateway
-  restart is not recognised and can commit the same entry a second time. Callers should check the
-  record before retrying across a restart.
 - **Optional parts:** malware scanning (7.4), interim witnesses after `dossier.sealed`, and
   revocation data for tokens.

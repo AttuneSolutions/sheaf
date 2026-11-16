@@ -98,3 +98,17 @@ def test_listing_is_one_level(store):
 def test_the_immutability_mode_is_chosen_not_defaulted(container):
     with pytest.raises(ValueError):
         BlobStore(container, immutability="Sometimes")
+
+
+def test_idempotency_receipts_are_kept_in_gateway_state_by_workflow(container):
+    from sheaf_gateway.azure import AzureState
+
+    state = AzureState(container, t.WORKFLOW)
+    name = "a" * 64
+
+    assert state.read_receipt(name) is None
+    state.write_receipt(name, b'{"request":"r1"}')
+    state.write_receipt(name, b'{"request":"r1"}')  # finishing from the journal writes it again
+
+    assert state.read_receipt(name) == b'{"request":"r1"}'
+    assert f"receipts/{t.WORKFLOW}/{name}.json" in container.blobs

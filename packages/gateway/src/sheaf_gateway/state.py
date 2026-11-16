@@ -1,6 +1,7 @@
-"""The gateway's own mutable state (7.1): the chain-head lease, so a chain has one writer, and the
-write-ahead journal, so a restart can finish an entry a crash left half-written (7.2 step 3).
-Both live in the `gateway-state` container, never in `evidence`."""
+"""The gateway's own mutable state (7.1): the chain-head lease, so a chain has one writer; the
+write-ahead journal, so a restart can finish an entry a crash left half-written (7.2 step 3); and
+the receipts kept for idempotency keys, so a retry after a restart gets the first receipt rather
+than a second entry (7.2 step 2). All live in the `gateway-state` container, never in `evidence`."""
 
 from typing import Protocol
 
@@ -22,6 +23,13 @@ class GatewayState(Protocol):
 
     def clear_journal(self) -> None: ...
 
+    def read_receipt(self, name: str) -> bytes | None:
+        """The receipt kept for an idempotency key, by the name the gateway gives it, or None."""
+
+    def write_receipt(self, name: str, data: bytes) -> None:
+        """Keep a receipt. Writing the same one again, as finishing from the journal does, is
+        harmless."""
+
 
 class MemoryState:
     """For tests and the memory store: nothing survives the process."""
@@ -30,6 +38,7 @@ class MemoryState:
         self._taken = False
         self._lost = False
         self._journal: bytes | None = None
+        self._receipts: dict[str, bytes] = {}
 
     def acquire(self) -> None:
         if self._taken:
@@ -47,6 +56,12 @@ class MemoryState:
 
     def clear_journal(self) -> None:
         self._journal = None
+
+    def read_receipt(self, name: str) -> bytes | None:
+        return self._receipts.get(name)
+
+    def write_receipt(self, name: str, data: bytes) -> None:
+        self._receipts[name] = data
 
     # For tests.
     def release(self) -> None:

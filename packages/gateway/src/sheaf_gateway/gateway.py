@@ -6,8 +6,12 @@
    it against the chain, and for a witness verify its signature and tokens.
 3. Chain: holding the chain-head lease, link it to the head, record it in the write-ahead
    journal, write its entry blob, its segment record and any witness files, each once and each
-   under its own retention, then clear the journal and apply it to the chain state.
+   under its own retention, apply it to the chain state, keep its receipt for the caller's
+   idempotency key, then clear the journal.
 4. Return the receipt and publish a content-free event.
+
+Receipts for idempotency keys are kept in `gateway-state` beside the journal, not in memory, so a
+retry that arrives after a restart gets the first receipt rather than committing a second entry.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import hashlib
 import json
 import logging
 import threading
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
@@ -86,6 +90,16 @@ def _reject(status: int, code: str, path: str, detail: str) -> Rejected:
     return Rejected(status, [Problem(code, path, detail)])
 
 
+def _receipt_name(scope: str, caller: str, key: str) -> str:
+    """Where the receipt for a caller's idempotency key is kept: a digest, so neither the caller
+    nor the key has to be a safe blob name. Uploads and entries keep their keys apart."""
+    return hashlib.sha256(json.dumps([scope, caller, key]).encode()).hexdigest()
+
+
+def _entry_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: entry[k] for k in ("seq", "hash", "committed_at")}
+
+
 class Gateway:
     def __init__(
         self,
@@ -116,9 +130,6 @@ class Gateway:
         self._lock = threading.Lock()
         self._halted: str | None = None
         """Why the gateway stopped committing, after a write failed partway."""
-        # TODO(7.1): bound these by age once receipts live in gateway-state.
-        self._receipts: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
-        self._uploads: dict[tuple[str, str], str] = {}
 
     # -- start ---------------------------------------------------------------------------------
 
@@ -148,6 +159,7 @@ class Gateway:
                     raise ChainCorrupt(f"the journal's seq {entry['seq']} does not follow the head")
                 log.warning("finishing seq %s from the journal", entry["seq"])
                 self._write(entry, files)
+                self._keep_receipt(record.get("receipt"), entry)
             elif head and entry["seq"] == head[0]:
                 # Its segment record was written, so the replay holds it, but its witness files
                 # or retention may not have been: write them again, without applying it twice.
@@ -155,6 +167,7 @@ class Gateway:
                     raise ChainCorrupt(f"the journal's seq {entry['seq']} differs from the chain")
                 log.warning("finishing seq %s from the journal", entry["seq"])
                 self._write(entry, files, apply=False)
+                self._keep_receipt(record.get("receipt"), entry)
             elif entry["seq"] > (head[0] + 1 if head else 1):
                 raise ChainCorrupt(f"the journal holds seq {entry['seq']}, past the head")
             self._own.clear_journal()
@@ -211,8 +224,9 @@ class Gateway:
             raise Rejected(422, problems)
         assert info is not None
         with self._lock:
-            earlier = self._uploads.get((caller, idempotency_key))
-            if earlier is not None and earlier != sha256:
+            name = _receipt_name("upload", caller, idempotency_key)
+            earlier = self._recall(name)
+            if earlier is not None and earlier["request"] != sha256:
                 raise _reject(
                     409, "idempotency_conflict", "Idempotency-Key", "used for another artefact"
                 )
@@ -223,7 +237,18 @@ class Gateway:
                     409, "artefact_conflict", "$", f"already stored as {_receipt(stored)}"
                 )
             created = self.store.put_artefact(info, data)
-            self._uploads[(caller, idempotency_key)] = sha256
+            if earlier is None:
+                try:
+                    self._remember(name, sha256, _receipt(info))
+                except Exception as error:
+                    # The artefact is stored; a retry with the same key and bytes completes.
+                    log.exception("the receipt for an upload was not kept")
+                    raise _reject(
+                        503,
+                        "state_unavailable",
+                        "Idempotency-Key",
+                        "the receipt was not kept; retry",
+                    ) from error
         return _receipt(info), created
 
     # -- 2-4. commit --------------------------------------------------------------------------
@@ -288,17 +313,19 @@ class Gateway:
         with self._lock:
             if self._halted is not None:
                 raise _reject(503, "gateway_halted", "$", self._halted)
+            name = None
             if idempotency_key is not None:
-                earlier = self._receipts.get((caller, idempotency_key))
+                name = _receipt_name("entry", caller, idempotency_key)
+                earlier = self._recall(name)
                 if earlier is not None:
-                    if earlier[0] != request:
+                    if earlier["request"] != request:
                         raise _reject(
                             409,
                             "idempotency_conflict",
                             "Idempotency-Key",
                             "used for another entry",
                         )
-                    return earlier[1], False
+                    return earlier["receipt"], False
 
             problems = check_draft(draft)
             if problems:
@@ -336,10 +363,9 @@ class Gateway:
                     raise Rejected(422, problems)
                 files = self._witness_files(draft["body"], tokens)
 
-            entry = self._chain(draft, now, files)
-            receipt = {k: entry[k] for k in ("seq", "hash", "committed_at")}
-            if idempotency_key is not None:
-                self._receipts[(caller, idempotency_key)] = (request, receipt)
+            remember = None if name is None else {"name": name, "request": request}
+            entry = self._chain(draft, now, files, remember)
+            receipt = _entry_receipt(entry)
 
         event = {
             "tenant": self.settings.tenant,
@@ -468,9 +494,14 @@ class Gateway:
             raise Rejected(403, problems)
 
     def _chain(
-        self, draft: dict[str, Any], now: datetime, files: dict[str, tuple[bytes, str]]
+        self,
+        draft: dict[str, Any],
+        now: datetime,
+        files: dict[str, tuple[bytes, str]],
+        remember: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Link the entry to the head, journal it, and write it. The caller holds the lock."""
+        """Link the entry to the head, journal it, write it, and keep its receipt for the
+        idempotency key in `remember`. The caller holds the lock."""
         if not self._own.held():
             self._halted = "the chain-head lease was lost; another gateway may be writing"
             raise _reject(503, "lease_lost", "$", self._halted)
@@ -488,6 +519,7 @@ class Gateway:
                     path: [base64.b64encode(data).decode(), media_type]
                     for path, (data, media_type) in files.items()
                 },
+                "receipt": remember,
             }
         ).encode()
         # A write that fails partway stops the gateway: committing again would reuse this seq
@@ -495,12 +527,37 @@ class Gateway:
         try:
             self._own.write_journal(journal)
             self._write(entry, files)
+            self._keep_receipt(remember, entry)
             self._own.clear_journal()
         except Exception as error:
             self._halted = f"a write failed at seq {entry['seq']}; restart to finish it"
             log.exception("halted: write failed at seq %s", entry["seq"])
             raise _reject(503, "write_failed", "$", self._halted) from error
         return entry
+
+    # -- idempotency receipts (7.2 steps 1 and 2) -------------------------------------------------
+
+    def _recall(self, name: str) -> dict[str, Any] | None:
+        """The receipt kept for an idempotency key, or None. Raises Rejected (503) if the
+        receipts cannot be read: going on could commit a retry a second time."""
+        try:
+            data = self._own.read_receipt(name)
+        except Exception as error:
+            log.exception("the idempotency receipts could not be read")
+            raise _reject(
+                503, "state_unavailable", "Idempotency-Key", "the receipts cannot be read; retry"
+            ) from error
+        return None if data is None else json.loads(data)
+
+    def _remember(self, name: str, request: str, receipt: dict[str, Any]) -> None:
+        data = json.dumps({"request": request, "receipt": receipt}, sort_keys=True).encode()
+        self._own.write_receipt(name, data)
+
+    def _keep_receipt(self, remember: dict[str, str] | None, entry: dict[str, Any]) -> None:
+        """Keep a committed entry's receipt, if it was submitted with an idempotency key. This is
+        part of the entry's journalled writes, so a crash before it is finished on restart."""
+        if remember is not None:
+            self._remember(remember["name"], remember["request"], _entry_receipt(entry))
 
     def _write(
         self,

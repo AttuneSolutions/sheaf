@@ -9,7 +9,8 @@
          -> 201 (stored) or 200 (already stored): the artefact receipt
 
     POST /v1/entries              the entry without seq, prev, committed_at and hash
-         Idempotency-Key          optional; a retry with the same key and body gets the receipt
+         Idempotency-Key          optional; a retry with the same key and body gets the first
+                                  receipt, even after a restart
          -> 201: {seq, hash, committed_at}
 
     POST /v1/witnesses            {entry, tokens}: a witness entry and its time-stamp responses

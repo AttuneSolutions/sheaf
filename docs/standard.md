@@ -486,8 +486,9 @@ is stored.
   tenant's virtual network; the storage account reached through a private endpoint; one replica,
   since a chain has one writer anyway. Its write-ahead journal and the chain-head lease live in a
   separate, mutable `gateway-state` container that only the gateway can write, because a replica's
-  local disk does not survive a restart. The witness (7.5) runs as a scheduled Container Apps job
-  from the same image, with its own identity.
+  local disk does not survive a restart; so do the receipts it keeps for idempotency keys (7.2).
+  The witness (7.5) runs as a scheduled Container Apps job from the same image, with its own
+  identity.
 - Callers authenticate to it with Entra ID: systems with a workload identity, people with their own
   token. The mandate's policy lists which callers, by id or by app role, may write which entry
   types, and each entry's actor is the caller that submitted it.
@@ -496,7 +497,8 @@ is stored.
 
 1. **Upload each artefact.** The caller sends its bytes with the declared SHA-256, kind, media type
    and sensitivity, the chain whose mandate in force it is checked against, plus an idempotency
-   key. The gateway holds the bytes in a temporary area of its
+   key, which the caller may not use again for other bytes. The gateway holds the bytes in a
+   temporary area of its
    own, not in Blob, and then:
    - recomputes the SHA-256 and rejects any mismatch;
    - sniffs the real type from the bytes and rejects any mismatch with the declared one;
@@ -507,7 +509,10 @@ is stored.
    is set when an entry refers to it (4). If any
    check fails, nothing is written and the caller gets an error code.
 2. **Commit the entry.** The caller sends the envelope without chain fields, and may send an
-   idempotency key so that a retry gets the first receipt rather than a second entry. The entry
+   idempotency key so that a retry gets the first receipt rather than a second entry. The gateway
+   keeps each receipt by caller and key for at least 30 days, durably and as part of the entry's
+   own writes, so a retry after a restart gets it too; the same key with another body is
+   refused. The entry
    goes to the chain its `chain` names, and one this gateway does not serve is refused. The gateway
    then:
    - validates the envelope, and the body against its type's schema;
@@ -521,7 +526,8 @@ is stored.
    3. advances the head and releases the lease.
 
    A write-ahead journal on the gateway lets it finish a half-committed entry after a restart,
-   including one whose segment record was written but whose witness files or retention were not.
+   including one whose segment record was written but whose witness files, retention or receipt
+   were not.
    Until it has, the gateway commits nothing more to that chain: committing again would reuse the
    `seq`.
 4. **Receipt and event.** The gateway returns the entry receipt (`seq`, `hash`) to the caller, and

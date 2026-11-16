@@ -110,11 +110,14 @@ class BlobStore:
 
 
 class AzureState:
-    """The chain-head lease and the journal, in the `gateway-state` container."""
+    """The chain-head lease, the journal and the idempotency receipts, in the `gateway-state`
+    container. Receipts are under `receipts/{workflow}/`, apart from the lease and the journal,
+    so a lifecycle rule can delete old ones by prefix (deployment guide, section 4)."""
 
     LEASE_SECONDS = 60
 
     def __init__(self, container: Any, workflow: str) -> None:
+        self._container, self._workflow = container, workflow
         self._lease_blob = container.get_blob_client(f"chains/{workflow}/lease")
         self._journal = container.get_blob_client(f"chains/{workflow}/journal.json")
         self._lease: Any = None
@@ -173,3 +176,15 @@ class AzureState:
     def clear_journal(self) -> None:
         with contextlib.suppress(ResourceNotFoundError):
             self._journal.delete_blob()
+
+    def _receipt(self, name: str) -> Any:
+        return self._container.get_blob_client(f"receipts/{self._workflow}/{name}.json")
+
+    def read_receipt(self, name: str) -> bytes | None:
+        try:
+            return self._receipt(name).download_blob().readall()
+        except ResourceNotFoundError:
+            return None
+
+    def write_receipt(self, name: str, data: bytes) -> None:
+        self._receipt(name).upload_blob(data, overwrite=True)

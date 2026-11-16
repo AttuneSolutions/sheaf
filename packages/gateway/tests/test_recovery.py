@@ -157,3 +157,136 @@ def test_without_the_lease_the_gateway_commits_nothing():
         run(g, t.ADMIN["id"], t.notice(dossier=None, actor=t.ADMIN))
 
     assert "lease" in str(refused.value)
+
+
+# -- idempotency receipts survive a restart (7.2 step 2) -------------------------------------
+
+
+def notice_bytes():
+    entry = t.notice(dossier=None, actor=t.ADMIN)
+    return t.mandate_bytes(entry)
+
+
+def test_a_retry_after_a_restart_gets_the_first_receipt():
+    store, state = MemoryStore(), MemoryState()
+    first = gateway(store, state)
+    genesis(first)
+    receipt, created = first.commit(t.ADMIN["id"], notice_bytes(), "retry-1")
+    state.release()
+
+    second = gateway(store, state)
+
+    assert created is True
+    assert second.commit(t.ADMIN["id"], notice_bytes(), "retry-1") == (receipt, False)
+    assert second.state.head[0] == receipt["seq"]
+
+
+def test_a_key_used_before_a_restart_is_not_used_for_another_entry():
+    store, state = MemoryStore(), MemoryState()
+    first = gateway(store, state)
+    genesis(first)
+    first.commit(t.ADMIN["id"], notice_bytes(), "retry-1")
+    state.release()
+    other = t.notice(dossier=None, actor=t.ADMIN)
+    other["body"]["detail"] = "something else"
+
+    with pytest.raises(Rejected) as refused:
+        gateway(store, state).commit(t.ADMIN["id"], t.mandate_bytes(other), "retry-1")
+
+    assert refused.value.status == 409
+
+
+class LosesReceiptsOnce(MemoryState):
+    """The entry is written, then keeping its receipt fails: the process dies there."""
+
+    failed = False
+
+    def write_receipt(self, name, data):
+        if not self.failed:
+            self.failed = True
+            raise OSError("gateway-state write failed")
+        super().write_receipt(name, data)
+
+
+def test_a_receipt_lost_in_a_crash_is_kept_from_the_journal_on_restart():
+    store, state = MemoryStore(), LosesReceiptsOnce()
+    first = gateway(store, state)
+    state.failed = True
+    genesis(first)
+    state.failed = False
+    with pytest.raises(Rejected) as halted:
+        first.commit(t.ADMIN["id"], notice_bytes(), "retry-1")
+    assert halted.value.status == 503
+    committed = first.state.head
+    state.release()
+
+    second = gateway(store, state)
+    receipt, created = second.commit(t.ADMIN["id"], notice_bytes(), "retry-1")
+
+    assert created is False
+    assert (receipt["seq"], receipt["hash"]) == committed
+    assert second.state.head == committed
+
+
+class CannotReadReceipts(MemoryState):
+    def read_receipt(self, name):
+        raise OSError("gateway-state unreachable")
+
+
+def test_a_keyed_commit_waits_while_the_receipts_cannot_be_read():
+    store, state = MemoryStore(), MemoryState()
+    first = gateway(store, state)
+    genesis(first)
+    head = first.state.head
+    state.release()
+    blind = CannotReadReceipts()
+    blind._journal = state._journal
+    second = gateway(store, blind)
+
+    with pytest.raises(Rejected) as refused:
+        second.commit(t.ADMIN["id"], notice_bytes(), "retry-1")
+
+    assert refused.value.status == 503
+    assert second.state.head == head
+    assert run(second, t.ADMIN["id"], t.notice(dossier=None, actor=t.ADMIN))["seq"] == head[0] + 1
+
+
+def test_an_upload_key_used_before_a_restart_names_the_same_artefact():
+    store, state = MemoryStore(), MemoryState()
+    first = gateway(store, state)
+    approver = t.APPROVER["id"]
+    declared = {"kind": "text.markdown", "media_type": "text/markdown", "sensitivity": "none"}
+    first.upload(
+        approver,
+        t.INSTRUCTIONS,
+        sha256=t.artefact_sha256(t.INSTRUCTIONS),
+        idempotency_key="u1",
+        **declared,
+    )
+    state.release()
+    other = b"# Other\n"
+
+    with pytest.raises(Rejected) as refused:
+        gateway(store, state).upload(
+            approver, other, sha256=t.artefact_sha256(other), idempotency_key="u1", **declared
+        )
+
+    assert refused.value.status == 409
+
+
+def test_an_upload_whose_receipt_is_not_kept_asks_for_a_retry_and_the_retry_succeeds():
+    store, state = MemoryStore(), LosesReceiptsOnce()
+    g = gateway(store, state)
+    upload = {
+        "sha256": t.artefact_sha256(t.INSTRUCTIONS),
+        "kind": "text.markdown",
+        "media_type": "text/markdown",
+        "sensitivity": "none",
+        "idempotency_key": "u1",
+    }
+
+    with pytest.raises(Rejected) as refused:
+        g.upload(t.APPROVER["id"], t.INSTRUCTIONS, **upload)
+    assert refused.value.status == 503
+
+    assert g.upload(t.APPROVER["id"], t.INSTRUCTIONS, **upload)[1] is False
