@@ -472,9 +472,9 @@ is stored.
 
 ### 7.1 Where it runs and who can write
 
-- In the tenant's own Azure subscription and region, as a container. One gateway per tenant, all
-  running the same image, whose digest is recorded in the mandate (5.6) so the code that validated
-  any entry is known.
+- In the tenant's own Azure subscription and region, as a container. One gateway per chain, so
+  one per workflow, all running the same image, whose digest is recorded in the mandate (5.6) so
+  the code that validated any entry is known.
 - Its managed identity is the **only** identity with write access to the `evidence` container: a
   role that can create and read but not delete (immutability blocks deletion anyway).
 - **No other workload may be able to obtain that identity.** On a virtual machine, any process can
@@ -567,7 +567,7 @@ writes and cannot sign, and the witness signs and cannot write.
 | | Gateway identity | Witness identity |
 |---|---|---|
 | `evidence` container | Create and read; no delete | Read only |
-| Witness key | None | Sign only (a custom role with the key `sign` data action and nothing else) |
+| Witness key | None | Sign only (a custom role with the key `sign` data action, and `read` for its public key; no other key operation) |
 | Gateway API | n/a | May submit `witness.*` entries only |
 
 - **The key** is an Azure Key Vault key in the tenant's subscription and region, EC P-256 (ES256,
@@ -694,7 +694,7 @@ signing with the Key Vault key and stamped by the three default authorities.
 | User delegation SAS lifetime and scope for single-blob, read-only links | 8 |
 | Availability and price of on-upload malware scanning | 7.4 |
 | A Key Vault EC P-256 key created with no release policy cannot be exported | 7.5 |
-| A custom role holding only the key `sign` data action works for a managed identity, and gives no other key operation | 7.5 |
+| A custom role holding only the key `sign` and `read` data actions works for a managed identity, and gives no other key operation | 7.5 |
 | Key Vault diagnostic logs record every sign operation, to a workspace the gateway's identity cannot write | 7.5 |
 | A compute option with its own managed identity, separate from the gateway, available in the tenant's region for the witness | 7.5 |
 | Outbound access from the witness to the chosen authorities' RFC 3161 endpoints, and their retry behaviour | 7.2 |

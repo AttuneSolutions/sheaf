@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sheaf standard</title>
+<title>$page_title</title>
 <meta name="description" content="$title. An open standard for evidence records of AI agents and automated workflows.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <style>
@@ -48,6 +48,10 @@ header {
   text-decoration: none; font-weight: 600; border-radius: 6px; padding: 0.55rem 0.9rem;
 }
 .source:hover { opacity: 0.9; text-decoration: none; }
+.tabs { max-width: 76rem; margin: 0.9rem auto -1.1rem; display: flex; gap: 1.4rem; }
+.tabs a { text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.95rem; padding: 0.3rem 0 0.7rem; border-bottom: 3px solid transparent; }
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
 .layout {
   max-width: 76rem; margin: 0 auto; padding: 0 16px;
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 3rem;
@@ -112,6 +116,9 @@ footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 0.
       </a>
     </div>
   </div>
+  <nav class="tabs" aria-label="Pages">
+$tabs
+  </nav>
 </header>
 <div class="layout">
   <nav class="side" aria-label="Contents">
@@ -133,7 +140,7 @@ $body
   </main>
 </div>
 <footer>
-  Apache License 2.0 · <a href="$repository/blob/main/docs/standard.md">Edit on GitHub</a>
+  Apache License 2.0 · <a href="$repository/blob/main/docs/$source">Edit on GitHub</a>
 </footer>
 </body>
 </html>

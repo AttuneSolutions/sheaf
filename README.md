@@ -19,7 +19,8 @@ jurisdictions, anchors the chain. An open verifier checks the whole record offli
 
 **Status:** pre-release. The standard is draft 0.2 and nothing has been written under it.
 
-Read the standard at **https://attunesolutions.github.io/sheaf/**.
+Read the standard at **https://attunesolutions.github.io/sheaf/**, and how to deploy it in
+[docs/deploy.md](docs/deploy.md) (also [on the site](https://attunesolutions.github.io/sheaf/deploy.html)).
 
 ## Layout
 
