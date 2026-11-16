@@ -194,6 +194,9 @@ Register one application for the gateway's API, single tenant:
   (for example `witness`), allowed for applications or users as each role needs.
 - **A delegated scope** (for example `user_impersonation`) for applications that act for a
   person, who then submits with their own sign-in (5.1).
+- **The Azure CLI as an authorised client** of that scope (*Expose an API*, *Add a client
+  application*, `04b07795-8ddb-461a-bbee-02f9e1bf7b46`), so the approver signs in to `sheaf-admin`
+  with `az login` (section 11).
 - **Assignment required** on its service principal, then assign each caller its app role: agents
   and applications by service principal, people through groups, and the witness's identity the
   `witness` role. An unassigned identity then cannot get a token for the gateway at all.
@@ -298,22 +301,145 @@ the resource group too, so nobody removes the network or the vault from under th
 
 ## 11 Genesis
 
-Each chain's first entry is its genesis `config.changed` (5.6): the approver's own sign-in, the
-chain's mandate and everything it names. Do this once for each chain in `SHEAF_CHAINS`.
+Each chain's first entry is its genesis `config.changed` (5.6): the chain's mandate and
+everything it names, submitted with the approver's own sign-in. `sheaf-admin` builds it from
+files, checks it offline with the rules the gateway runs, then sends it. Do this once for each
+chain in `SHEAF_CHAINS`, from a machine that reaches the gateway's internal address, with a
+checkout of the release you deployed (`git checkout v<version> && uv sync`).
 
-1. **Write the mandate** (`sheaf.mandate/1`): the chain, policy (callers and roles), instructions,
-   tenant schemas, retention classes, witness interval, `witness_key` (the key id,
-   `ES256`, the SHA-256 of its public key in PEM form, and the witness identity's object ID),
-   authorities and their assessment, `personal_data`, and `gateway.image` (the digest deployed in
-   section 8).
-2. **Upload** the mandate, its instructions and its schemas: `PUT /v1/artefacts/{sha256}`, with
-   the chain named in `Sheaf-Chain`. Every upload names the chain whose mandate it is checked
-   against.
-3. **Store the trust files** the mandate names, the witness key's PEM and each authority's root:
-   `PUT /v1/trust/{path}`.
-4. **Commit the `config.changed`** with `POST /v1/entries`, signed in as the approver.
-5. **Start the witness job.** Its interim witness puts the mandate in force; until then the gateway
-   accepts nothing else.
+A genesis cannot be taken back. The container is locked, so a mistake stays in the record for the
+retention period, and a mandate that cannot be witnessed never applies.
+
+1. **Find your identity.** `az login` as the approver, then:
+
+   ```bash
+   uv run sheaf-admin whoami --gateway https://<gateway fqdn> \
+     --scope api://<application id>/.default
+   ```
+
+   `id` is how entries name you: under clear identifiers your object ID, which is also
+   `SHEAF_BOOTSTRAP_CALLER`; under pseudonymised ones your pseudonym. It is the `approver` below.
+
+2. **Write the genesis file**, one folder per chain, beside the files it names:
+
+   ```text
+   genesis/case-review/
+     genesis.json
+     instructions/review.md
+     schemas/findings.json
+     witness.pem
+   ```
+
+   `witness.pem` is the public half of the witness key from section 5:
+
+   ```bash
+   az keyvault key download --vault-name <vault> --name acme-witness --version <version> \
+     --encoding PEM --file genesis/case-review/witness.pem
+   ```
+
+   `genesis.json` is the mandate (`sheaf.mandate/1`, standard 5.6) as you mean it, except that
+   where the mandate gives a file's SHA-256 you name the file, and the tool computes the digest
+   from the bytes it uploads. Authorities are named from the witness's catalogue (the free
+   default is `freetsa`, `sectigo` and `digicert`), or written out with `roots` as the paths of
+   their DER certificates.
+
+   ```json
+   {
+     "approver": "<your id from whoami>",
+     "mandate": {
+       "$schema": "sheaf.mandate/1",
+       "chain": "acme/case-review",
+       "version": "2026.11.1",
+       "policy": {
+         "callers": [
+           {"id": "<agent object id>", "types": ["dossier.opened", "source.read", "ai.exchange",
+             "trace.recorded", "finding.drafted", "output.produced", "correction", "notice",
+             "dossier.sealed"]}
+         ],
+         "roles": [
+           {"role": "reviewer", "types": ["decision.recorded"]},
+           {"role": "approver", "types": ["config.changed", "retention.expired"]}
+         ],
+         "kinds": {
+           "ai.exchange.raw": {"max_bytes": 20971520},
+           "data.json": {"max_bytes": 5242880},
+           "text.markdown": {"max_bytes": 1048576},
+           "trace.otel": {"max_bytes": 20971520}
+         },
+         "source_capture": "reference",
+         "sensitivity": {
+           "client_pii": ["case-reviewer"],
+           "staff_pii": ["case-review-admin"],
+           "none": ["case-reviewer", "case-review-admin"]
+         }
+       },
+       "instructions": [{"name": "review-instructions", "file": "instructions/review.md"}],
+       "schemas": [{"id": "acme.findings/1", "file": "schemas/findings.json"}],
+       "models": [
+         {"provider": "azure-ai-foundry", "region": "<region>", "deployment": "case-review",
+          "model": "<model>", "model_version": "<model version>",
+          "parameters": {"temperature": "0.2"}}
+       ],
+       "registry": {"version": "1.0.0"},
+       "retention": {"classes": [{"class": "regulated-record", "period": "P7Y"}]},
+       "witness_interval": {"interval": "daily", "interim_after_sealed": false},
+       "witness_key": {
+         "key_id": "acme-witness/<version>",
+         "algorithm": "ES256",
+         "public_key": "witness.pem",
+         "identity": "<witness identity object id>"
+       },
+       "authorities": {
+         "list": ["freetsa", "sectigo", "digicert"],
+         "assessment": {
+           "by": {"kind": "person", "id": "<your id from whoami>"},
+           "date": "2026-11-20",
+           "statement": "<why no single order or treaty reaches every authority>"
+         }
+       },
+       "personal_data": {"identifiers": "clear", "basis": "<the lawful basis>"},
+       "gateway": {"image": "sha256:<digest deployed in section 8>"}
+     }
+   }
+   ```
+
+   Numbers are integers (5.2): a fraction, such as a model's temperature, is a string. A
+   `reason` beside `approver` replaces the default, `genesis`.
+
+3. **Check it offline**, and correct it until nothing is reported:
+
+   ```bash
+   uv run sheaf-admin genesis check genesis/case-review/genesis.json
+   ```
+
+   The image you deployed holds the same tool, so the check can also run with exactly that code:
+
+   ```bash
+   docker run --rm -v "$PWD/genesis/case-review:/genesis:ro" \
+     ghcr.io/attunesolutions/sheaf@sha256:<digest> sheaf-admin genesis check /genesis/genesis.json
+   ```
+
+4. **Apply it:**
+
+   ```bash
+   uv run sheaf-admin genesis apply genesis/case-review/genesis.json \
+     --gateway https://<gateway fqdn> --scope api://<application id>/.default \
+     --key-vault https://<vault>.vault.azure.net
+   ```
+
+   It checks again; makes sure you are signed in as a person and as `approver`; makes sure
+   `witness.pem` is the key the vault holds as `key_id`; shows what it will commit and asks you
+   to type the chain name. Then it uploads the mandate, its instructions and its schemas, stores
+   the trust files, and commits the `config.changed`. If it stops partway, run it again: what is
+   stored is kept, and the same bytes are accepted again.
+
+   Two things only you can check, in what it shows before you type: `witness identity` is the
+   witness job's identity (section 6), or every witness is refused; and `gateway image` is the
+   digest running.
+
+5. **Start the witness job** (section 8). Its interim witness puts the mandate in force, and its
+   log says `acme/case-review: witness committed at seq 2`. Until then the gateway accepts
+   nothing else on that chain.
 
 ## 12 Running it
 
@@ -333,10 +459,8 @@ chain's mandate and everything it names. Do this once for each chain in `SHEAF_C
 
 ## 13 Not built yet
 
-As of `v0.1.0`:
-
-- **Genesis tooling:** no command builds a mandate, uploads it with its trust files and commits
-  the `config.changed`; section 11 is done against the API by hand.
+- **Mandate changes:** `sheaf-admin` makes a chain's genesis only. A later `config.changed`, such
+  as a new image, policy or witness key, is made against the API by hand.
 - **The verifier** (9).
 - **Events to readers** (7.2 step 4): the gateway publishes none yet.
 - **Idempotency receipts** are kept in memory, so a caller's retry that arrives after a gateway

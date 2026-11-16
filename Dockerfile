@@ -1,5 +1,6 @@
 # One image for every Sheaf workload (standard 7.1): the gateway by default, and the witness job
 # as a scheduled Container Apps job running `python -m sheaf_witness` with its own identity.
+# `sheaf-admin` is in it too, so a genesis can be checked with the released code.
 # A mandate records its digest as `gateway.image`, so anyone must be able to rebuild the same
 # digest from the same commit: base images are pinned by digest, and file times come from the
 # commit, not the build.
@@ -25,6 +26,7 @@ WORKDIR /src
 
 # Locked third-party dependencies first, so a code change does not fetch them again.
 COPY pyproject.toml uv.lock ./
+COPY packages/admin/pyproject.toml packages/admin/
 COPY packages/core/pyproject.toml packages/core/
 COPY packages/gateway/pyproject.toml packages/gateway/
 COPY packages/witness/pyproject.toml packages/witness/

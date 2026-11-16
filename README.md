@@ -32,6 +32,7 @@ Read the standard at **https://attunesolutions.github.io/sheaf/**, and how to de
 | `packages/gateway` | The write gateway: FastAPI upload and commit endpoints (Azure Blob store with locked per-blob retention, chain-head lease, write-ahead journal and recovery on start; callers authenticated by Entra ID access tokens, v2, validated against the tenant's keys). Witnesses are submitted with their tokens to `POST /v1/witnesses`; trust files to `PUT /v1/trust/...` |
 | `Dockerfile` | One image for every workload, `linux/amd64` and `linux/arm64` |
 | `packages/witness` | The witness: the catalogue of time-stamp authorities and the free default (FreeTSA, Sectigo, DigiCert), the RFC 3161 client, the signer and witness assembly and the scheduled job (`python -m sheaf_witness`), which follows the chain, signs with Key Vault and submits to the gateway. No revocation capture or interim-after-seal yet |
+| `packages/admin` | `sheaf-admin`: a chain's genesis, written as files, checked offline with the gateway's own rules, then sent with the approver's own sign-in after it confirms the witness key against Key Vault (`genesis check`, `genesis apply`, `whoami`) |
 | `packages/verifier` | The offline verifier (to come) |
 
 ## Development

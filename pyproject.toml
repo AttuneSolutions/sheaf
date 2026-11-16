@@ -3,7 +3,7 @@ name = "sheaf"
 version = "0.0.0"
 description = "Workspace root for Sheaf: the evidence dossier standard, write gateway, witness and verifier"
 requires-python = ">=3.12"
-dependencies = ["sheaf-core", "sheaf-gateway", "sheaf-witness"]
+dependencies = ["sheaf-admin", "sheaf-core", "sheaf-gateway", "sheaf-witness"]
 
 [dependency-groups]
 dev = [
@@ -19,6 +19,7 @@ package = false
 members = ["packages/*"]
 
 [tool.uv.sources]
+sheaf-admin = { workspace = true }
 sheaf-core = { workspace = true }
 sheaf-gateway = { workspace = true }
 sheaf-witness = { workspace = true }
@@ -35,4 +36,4 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["sheaf_core", "sheaf_gateway", "sheaf_witness"]
+known-first-party = ["sheaf_admin", "sheaf_core", "sheaf_gateway", "sheaf_witness"]

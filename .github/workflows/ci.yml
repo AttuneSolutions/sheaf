@@ -86,6 +86,9 @@ jobs:
       - name: The witness job is in the same image
         run: docker run --rm --entrypoint python sheaf:ci -c "import sheaf_witness.__main__"
 
+      - name: The admin tool is in the same image
+        run: docker run --rm --entrypoint sheaf-admin sheaf:ci --help
+
       - name: Container logs
         if: always()
         run: docker logs sheaf-ci || true

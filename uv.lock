@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "sheaf",
+    "sheaf-admin",
     "sheaf-core",
     "sheaf-gateway",
     "sheaf-witness",
@@ -951,6 +952,7 @@ name = "sheaf"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "sheaf-admin" },
     { name = "sheaf-core" },
     { name = "sheaf-gateway" },
     { name = "sheaf-witness" },
@@ -965,6 +967,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "sheaf-admin", editable = "packages/admin" },
     { name = "sheaf-core", editable = "packages/core" },
     { name = "sheaf-gateway", editable = "packages/gateway" },
     { name = "sheaf-witness", editable = "packages/witness" },
@@ -975,6 +978,25 @@ dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.7" },
+]
+
+[[package]]
+name = "sheaf-admin"
+version = "0.1.0"
+source = { editable = "packages/admin" }
+dependencies = [
+    { name = "azure-identity" },
+    { name = "httpx" },
+    { name = "sheaf-core" },
+    { name = "sheaf-witness" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "azure-identity", specifier = ">=1.27.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "sheaf-core", editable = "packages/core" },
+    { name = "sheaf-witness", editable = "packages/witness" },
 ]
 
 [[package]]
