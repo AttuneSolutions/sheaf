@@ -4,6 +4,16 @@ on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
+    # Changes that cannot alter the image do not rebuild it. GitHub does not apply path filters
+    # to tag pushes, so a version tag always publishes.
+    paths-ignore:
+      - docs/**
+      - README.md
+      - CLAUDE.md
+      - LICENSE
+      - .github/dependabot.yml
+      - .github/workflows/ci.yml
+      - .github/workflows/pages.yml
   workflow_dispatch:
 
 env:
