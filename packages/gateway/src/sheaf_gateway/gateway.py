@@ -164,6 +164,7 @@ class Gateway:
     def upload_limit(self, caller: str, kind: str, *, roles: Collection[str] = ()) -> int:
         """The most bytes `caller`, holding `roles`, may upload as `kind`. Raises Rejected if none
         at all."""
+        self._check_running()
         registered = registered_kind(kind)
         if registered is None:
             raise _reject(422, "kind_unknown", "kind", f"{kind} is not registered")
@@ -194,6 +195,7 @@ class Gateway:
         roles: Collection[str] = (),
     ) -> tuple[dict[str, Any], bool]:
         """Check and store an artefact. Returns its receipt, and whether it was new."""
+        self._check_running()
         if len(data) > self.upload_limit(caller, kind, roles=roles):
             raise _reject(413, "too_large", "bytes", f"over the limit for {kind}")
         mandate = self.state.in_force
@@ -382,6 +384,7 @@ class Gateway:
     ) -> dict[str, str]:
         """The subject as entries must name it under a mandate that pseudonymises: its id
         replaced by its pseudonym. Only for a caller the mandate in force grants something."""
+        self._check_running()
         if self.settings.identifiers != "pseudonymised" or self.pseudonyms is None:
             raise _reject(
                 422, "not_pseudonymised", "$", "this gateway records identifiers in clear"
@@ -410,6 +413,7 @@ class Gateway:
     ) -> bool:
         """Store a witness key or a pinned authority certificate in `trust/`, once, before the
         mandate naming it is committed. Whoever may write `config.changed` may store these."""
+        self._check_running()
         if not self._may_write(caller, roles, "config.changed"):
             raise _reject(403, "caller_unknown", "$", f"{caller} may not change the mandate")
         problems = check_trust_file(path, data)
@@ -423,6 +427,11 @@ class Gateway:
                 raise _reject(
                     409, "trust_conflict", "path", "another file is stored there"
                 ) from error
+
+    def _check_running(self) -> None:
+        """A halted chain's state is not trusted for anything until the gateway restarts."""
+        if self._halted is not None:
+            raise _reject(503, "gateway_halted", "$", self._halted)
 
     def _may_write(self, caller: str, roles: Collection[str], entry_type: str) -> bool:
         if self.state.head is None:
@@ -627,18 +636,21 @@ class Gateways:
     def put_trust(
         self, caller: str, path: str, data: bytes, *, roles: Collection[str] = ()
     ) -> bool:
-        """Trust files are the tenant's, not a chain's: whoever may change any chain's mandate
-        may store them."""
-        gateways = list(self._by_chain.values())
-        permitted = [g for g in gateways if g._may_write(caller, roles, "config.changed")]
-        return (permitted or gateways)[0].put_trust(caller, path, data, roles=roles)
+        """Trust files are the tenant's, not a chain's: whoever may change any running chain's
+        mandate may store them. Each is written once and pinned by its SHA-256 in the mandate
+        that names it, so a wrong file is never trusted: the mandate naming it is refused."""
+        running = [g for g in self._by_chain.values() if g._halted is None]
+        permitted = [g for g in running if g._may_write(caller, roles, "config.changed")]
+        chosen = (permitted or running or list(self._by_chain.values()))[0]
+        return chosen.put_trust(caller, path, data, roles=roles)
 
     def subject_pseudonym(
         self, caller: str, subject: Any, *, roles: Collection[str] = ()
     ) -> dict[str, str]:
         """For a caller that any chain's mandate in force grants something."""
         refused: Rejected | None = None
-        for gateway in self._by_chain.values():
+        running = [g for g in self._by_chain.values() if g._halted is None]
+        for gateway in running or list(self._by_chain.values()):
             try:
                 return gateway.subject_pseudonym(caller, subject, roles=roles)
             except Rejected as error:

@@ -150,9 +150,15 @@ def test_a_chain_that_does_not_add_up_is_halted_and_the_others_carry_on():
     corrupt = commit(world.client, t.AGENT["id"], {**t.ai_exchange(), "chain": t.CHAIN})
     other = world.open_dossier(OTHER, claims)
 
+    upload_to_corrupt = upload(
+        world.client, t.AGENT["id"], t.TRACE, "trace.otel", "application/json", chain=t.CHAIN
+    )
+
     assert corrupt.status_code == 503
     assert corrupt.json()["problems"][0]["code"] == "gateway_halted"
     assert other.status_code == 201, other.json()
+    # A halted chain's state is not trusted for anything, uploads included.
+    assert upload_to_corrupt.status_code == 503
 
 
 def test_one_gateway_serves_one_tenant_and_each_chain_once():
