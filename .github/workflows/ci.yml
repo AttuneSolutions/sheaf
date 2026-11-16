@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           docker run -d --name sheaf-ci -p 8080:8080 \
             -e SHEAF_STORE=memory -e SHEAF_IDENTIFIERS=clear \
-            -e SHEAF_CHAIN=acme/case-review -e SHEAF_BOOTSTRAP_CALLER=acme-approver-1 \
+            -e SHEAF_CHAINS=acme/case-review -e SHEAF_BOOTSTRAP_CALLER=acme-approver-1 \
             sheaf:ci
           for attempt in $(seq 1 30); do
             status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/me || true)

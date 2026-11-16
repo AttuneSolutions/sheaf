@@ -3,7 +3,7 @@ with its own managed identity (7.5), from the same image as the gateway."""
 
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -11,7 +11,7 @@ from importlib.metadata import version
 log = logging.getLogger("sheaf_witness")
 
 REQUIRED = (
-    "SHEAF_CHAIN",
+    "SHEAF_CHAINS",
     "SHEAF_GATEWAY_URL",
     "SHEAF_GATEWAY_SCOPE",
     "SHEAF_CONTAINER_URL",
@@ -22,7 +22,7 @@ REQUIRED = (
 
 @dataclass(frozen=True)
 class JobSettings:
-    chain: str
+    chains: tuple[str, ...]
     gateway_url: str
     gateway_scope: str
     container_url: str
@@ -36,7 +36,7 @@ def settings_from(env: Mapping[str, str]) -> JobSettings:
     if missing:
         raise SystemExit(f"the witness job needs {', '.join(missing)}")
     return JobSettings(
-        chain=env["SHEAF_CHAIN"],
+        chains=tuple(c.strip() for c in env["SHEAF_CHAINS"].split(",") if c.strip()),
         gateway_url=env["SHEAF_GATEWAY_URL"],
         gateway_scope=env["SHEAF_GATEWAY_SCOPE"],
         container_url=env["SHEAF_CONTAINER_URL"],
@@ -94,17 +94,39 @@ def main() -> None:
         return signers[key_id]
 
     intervals = {a.authority: a.min_interval_seconds for a in catalogue().values()}
-    receipts = run_once(
-        container,
-        GatewayClient(http, settings.gateway_url, headers=bearer),
-        signer_for=signer_for,
-        stamper=Stamper(http, retry_for=settings.retry_for, min_interval=intervals),
-        chain=settings.chain,
-        actor={"kind": "system", "id": settings.identity, "version": version("sheaf-witness")},
-        now=datetime.now(UTC),
-    )
-    for receipt in receipts:
-        log.info("witness committed at seq %s", receipt["seq"])
+    gateway = GatewayClient(http, settings.gateway_url, headers=bearer)
+    stamper = Stamper(http, retry_for=settings.retry_for, min_interval=intervals)
+    actor = {"kind": "system", "id": settings.identity, "version": version("sheaf-witness")}
+    now = datetime.now(UTC)
+
+    def run(chain: str) -> list[dict]:
+        return run_once(
+            container,
+            gateway,
+            signer_for=signer_for,
+            stamper=stamper,
+            chain=chain,
+            actor=actor,
+            now=now,
+        )
+
+    failed = witness_each(settings.chains, run)
+    if failed:
+        raise SystemExit(f"not witnessed: {', '.join(failed)}")
+
+
+def witness_each(chains: Sequence[str], run: Callable[[str], list[dict]]) -> list[str]:
+    """Witness each chain in turn. One that fails is logged and the others still run; the
+    chains that failed are returned, so the job ends in failure and the next run retries them."""
+    failed = []
+    for chain in chains:
+        try:
+            for receipt in run(chain):
+                log.info("%s: witness committed at seq %s", chain, receipt["seq"])
+        except Exception:
+            log.exception("%s: not witnessed", chain)
+            failed.append(chain)
+    return failed
 
 
 if __name__ == "__main__":

@@ -5,12 +5,12 @@ from sheaf_witness.__main__ import settings_from
 
 def test_the_job_refuses_to_start_without_its_settings():
     with pytest.raises(SystemExit, match="SHEAF_GATEWAY_URL"):
-        settings_from({"SHEAF_CHAIN": "acme/case-review"})
+        settings_from({"SHEAF_CHAINS": "acme/case-review"})
 
 
 def test_the_job_reads_its_settings_from_the_environment():
     env = {
-        "SHEAF_CHAIN": "acme/case-review",
+        "SHEAF_CHAINS": "acme/case-review, acme/claims-triage",
         "SHEAF_GATEWAY_URL": "https://gateway.example",
         "SHEAF_GATEWAY_SCOPE": "api://sheaf-gateway/.default",
         "SHEAF_CONTAINER_URL": "https://account.blob.core.windows.net/evidence",
@@ -20,5 +20,22 @@ def test_the_job_reads_its_settings_from_the_environment():
 
     settings = settings_from(env)
 
-    assert settings.chain == "acme/case-review"
+    assert settings.chains == ("acme/case-review", "acme/claims-triage")
     assert settings.retry_for == 6 * 3600
+
+
+def test_a_chain_that_fails_does_not_stop_the_others():
+    from sheaf_witness.__main__ import witness_each
+
+    seen = []
+
+    def run(chain):
+        seen.append(chain)
+        if chain == "acme/case-review":
+            raise RuntimeError("an authority is down")
+        return [{"seq": 9}]
+
+    failed = witness_each(("acme/case-review", "acme/claims-triage"), run)
+
+    assert seen == ["acme/case-review", "acme/claims-triage"]
+    assert failed == ["acme/case-review"]

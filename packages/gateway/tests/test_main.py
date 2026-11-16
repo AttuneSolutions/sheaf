@@ -7,7 +7,7 @@ from sheaf_gateway.main import authenticator_from, gateway_from, pseudonyms_from
 from sheaf_gateway.pseudonyms import MemoryPseudonyms
 
 BASE = {
-    "SHEAF_CHAIN": t.CHAIN,
+    "SHEAF_CHAINS": t.CHAIN,
     "SHEAF_BOOTSTRAP_CALLER": t.APPROVER["id"],
     "SHEAF_IDENTIFIERS": "clear",
 }
@@ -24,9 +24,23 @@ def test_azure_needs_the_account_and_a_chosen_immutability_mode():
 
 
 def test_memory_starts_empty_and_recovered():
-    gateway = gateway_from({**BASE, "SHEAF_STORE": "memory"})
+    gateways = gateway_from({**BASE, "SHEAF_STORE": "memory"})
 
-    assert gateway.state.head is None
+    assert gateways.chain(t.CHAIN).state.head is None
+
+
+def test_one_gateway_serves_every_chain_it_is_given():
+    gateways = gateway_from(
+        {**BASE, "SHEAF_STORE": "memory", "SHEAF_CHAINS": f"{t.CHAIN}, acme/claims-triage"}
+    )
+
+    assert gateways.chains == (t.CHAIN, "acme/claims-triage")
+
+
+@pytest.mark.parametrize("chains", ["", " , ", "case-review", "acme/case-review,globex/claims"])
+def test_the_chains_are_one_tenants_named_in_full(chains):
+    with pytest.raises((RuntimeError, ValueError)):
+        gateway_from({**BASE, "SHEAF_STORE": "memory", "SHEAF_CHAINS": chains})
 
 
 def test_without_entra_settings_every_request_is_refused():
@@ -57,4 +71,4 @@ def test_a_pseudonymised_memory_gateway_starts():
     pseudonyms = pseudonyms_from(env)
 
     assert isinstance(pseudonyms, MemoryPseudonyms)
-    assert gateway_from(env, pseudonyms).state.head is None
+    assert gateway_from(env, pseudonyms).chain(t.CHAIN).state.head is None

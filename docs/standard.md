@@ -472,9 +472,10 @@ is stored.
 
 ### 7.1 Where it runs and who can write
 
-- In the tenant's own Azure subscription and region, as a container. One gateway per chain, so
-  one per workflow, all running the same image, whose digest is recorded in the mandate (5.6) so
-  the code that validated any entry is known.
+- In the tenant's own Azure subscription and region, as a container. One gateway per tenant,
+  serving every one of its chains (one per workflow), each with its own mandate, sequence, lease
+  and journal. A fault in one chain halts only that chain. The image's digest is recorded in each
+  mandate (5.6), so the code that validated any entry is known.
 - Its managed identity is the **only** identity with write access to the `evidence` container: a
   role that can create and read but not delete (immutability blocks deletion anyway).
 - **No other workload may be able to obtain that identity.** On a virtual machine, any process can
@@ -494,7 +495,8 @@ is stored.
 ### 7.2 The pipeline
 
 1. **Upload each artefact.** The caller sends its bytes with the declared SHA-256, kind, media type
-   and sensitivity, plus an idempotency key. The gateway holds the bytes in a temporary area of its
+   and sensitivity, the chain whose mandate in force it is checked against, plus an idempotency
+   key. The gateway holds the bytes in a temporary area of its
    own, not in Blob, and then:
    - recomputes the SHA-256 and rejects any mismatch;
    - sniffs the real type from the bytes and rejects any mismatch with the declared one;
@@ -505,7 +507,8 @@ is stored.
    is set when an entry refers to it (4). If any
    check fails, nothing is written and the caller gets an error code.
 2. **Commit the entry.** The caller sends the envelope without chain fields, and may send an
-   idempotency key so that a retry gets the first receipt rather than a second entry. The gateway
+   idempotency key so that a retry gets the first receipt rather than a second entry. The entry
+   goes to the chain its `chain` names, and one this gateway does not serve is refused. The gateway
    then:
    - validates the envelope, and the body against its type's schema;
    - checks the entry's `actor.id` is the authenticated caller and any `actor.role` is one its
@@ -519,7 +522,8 @@ is stored.
 
    A write-ahead journal on the gateway lets it finish a half-committed entry after a restart,
    including one whose segment record was written but whose witness files or retention were not.
-   Until it has, the gateway commits nothing more: committing again would reuse the `seq`.
+   Until it has, the gateway commits nothing more to that chain: committing again would reuse the
+   `seq`.
 4. **Receipt and event.** The gateway returns the entry receipt (`seq`, `hash`) to the caller, and
    publishes a content-free event to subscribed readers: `{ tenant, workflow, seq, dossier,
    type, hash }`. A failure to publish never fails the commit.

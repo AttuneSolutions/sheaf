@@ -420,7 +420,9 @@ def witness(
 
 
 def witness_draft(body: Mapping[str, Any], *, actor: Mapping[str, Any] = WITNESS):
-    return draft(f"witness.{body['witness']}", body, dossier=None, actor=actor)
+    """The entry for a witness, on the chain the witness is for."""
+    entry = draft(f"witness.{body['witness']}", body, dossier=None, actor=actor)
+    return {**entry, "chain": body.get("chain", CHAIN)}
 
 
 def examples() -> dict[str, dict[str, Any]]:
@@ -760,13 +762,14 @@ def attested(
     down: Iterable[str] = (),
     key_id: str = KEY_ID,
     at: datetime = STAMPED_AT,
+    chain: str = CHAIN,
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     """A witness signed with the test witness key and stamped by the test authorities, except
     those `down`, with the tokens by authority."""
     from sheaf_core.tsp import check_token, request
     from sheaf_core.witness import imprint_bytes, sign_es256, signing_input
 
-    body: dict[str, Any] = {"spec": SPEC, "chain": CHAIN, "witness": which}
+    body: dict[str, Any] = {"spec": SPEC, "chain": chain, "witness": which}
     if interval is not None:
         body["interval"] = {"from": interval[0], "to": interval[1]}
     body.update({"last_seq": last_seq, "last_hash": last_hash, "key_id": key_id})

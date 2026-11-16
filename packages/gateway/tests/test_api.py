@@ -63,7 +63,17 @@ def client(parts):
 
 
 def upload(
-    client, caller, data, kind, media_type, *, sensitivity="none", sha256=None, key=None, roles=()
+    client,
+    caller,
+    data,
+    kind,
+    media_type,
+    *,
+    sensitivity="none",
+    sha256=None,
+    key=None,
+    roles=(),
+    chain=t.CHAIN,
 ):
     sha256 = sha256 or artefact_sha256(data)
     key = key or f"upload-{sha256}"
@@ -72,6 +82,7 @@ def upload(
         "Content-Type": media_type,
         "Sheaf-Kind": kind,
         "Sheaf-Sensitivity": sensitivity,
+        "Sheaf-Chain": chain,
         "Idempotency-Key": key,
     }
     if roles:
@@ -106,7 +117,7 @@ def upload_mandate(client, doc, caller=None):
         (t.INSTRUCTIONS, "text.markdown", "text/markdown"),
         (t.FINDINGS_SCHEMA, "schema.json", "application/schema+json"),
     ):
-        response = upload(client, caller, data, kind, media_type)
+        response = upload(client, caller, data, kind, media_type, chain=doc["chain"])
         assert response.status_code in (200, 201), response.json()
     for path, data in t.trust_files(doc).items():
         response = put_trust(client, caller, path, data)
@@ -388,10 +399,12 @@ def test_an_upload_names_an_idempotency_key(client):
             "Content-Type": "text/plain",
             "Sheaf-Kind": "text.plain",
             "Sheaf-Sensitivity": "none",
+            "Sheaf-Chain": t.CHAIN,
         },
     )
 
     assert response.status_code == 422
+    assert "idempotency-key" in str(response.json()).lower()
 
 
 def test_an_entry_is_one_unambiguous_json_object(client):

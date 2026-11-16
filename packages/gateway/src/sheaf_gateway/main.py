@@ -1,7 +1,7 @@
 """Start the gateway from the environment: `uvicorn --factory sheaf_gateway.main:create`.
 
-    SHEAF_CHAIN              {tenant}/{workflow}
-    SHEAF_BOOTSTRAP_CALLER   the identity that may write the genesis config.changed
+    SHEAF_CHAINS             the tenant's chains, comma-separated: {tenant}/{workflow},...
+    SHEAF_BOOTSTRAP_CALLER   the identity that may write each chain's genesis config.changed
     SHEAF_STORE              "azure", or "memory" to smoke-test the image (nothing survives)
     SHEAF_STORAGE_URL        azure: the storage account, https://{account}.blob.core.windows.net
     SHEAF_IMMUTABILITY       azure: "Locked" (the standard, section 4), or "Unlocked" to test
@@ -11,20 +11,22 @@
     SHEAF_ENTRA_AUDIENCE     the gateway's application (client) ID, the tokens' audience
     AZURE_CLIENT_ID          azure: the gateway's managed identity, if user-assigned
 
-On start the gateway takes the chain-head lease and rebuilds its state from the container
-(`Gateway.recover`), refusing to start if the container does not hold an unbroken chain. Without
-the two Entra settings it refuses every request.
+One gateway serves all of the tenant's chains (7.1). On start it takes each chain's lease and
+rebuilds its state from the container (`Gateways.recover`); a chain the container does not hold
+unbroken is halted, and the others carry on. Without the two Entra settings it refuses every
+request.
 """
 
 import logging
 import os
+import re
 from collections.abc import Mapping
 
 from fastapi import FastAPI
 
 from sheaf_gateway.app import create_app
 from sheaf_gateway.entra import EntraAuthenticator
-from sheaf_gateway.gateway import Gateway, Settings
+from sheaf_gateway.gateway import Gateway, Gateways, Settings
 from sheaf_gateway.hooks import Authenticator, refuse_all
 from sheaf_gateway.pseudonyms import (
     KeyVaultPseudonyms,
@@ -32,8 +34,8 @@ from sheaf_gateway.pseudonyms import (
     Pseudonymiser,
     RecordedIdentities,
 )
-from sheaf_gateway.state import MemoryState
-from sheaf_gateway.store import MemoryStore
+from sheaf_gateway.state import GatewayState, MemoryState
+from sheaf_gateway.store import MemoryStore, Store
 
 log = logging.getLogger("sheaf.gateway")
 
@@ -55,16 +57,26 @@ def pseudonyms_from(env: Mapping[str, str]) -> Pseudonymiser | None:
     return KeyVaultPseudonyms(SecretClient(env["SHEAF_KEY_VAULT_URL"], credential))
 
 
-def gateway_from(env: Mapping[str, str], pseudonyms: Pseudonymiser | None = None) -> Gateway:
-    settings = Settings(
-        chain=env["SHEAF_CHAIN"],
-        bootstrap_caller=env["SHEAF_BOOTSTRAP_CALLER"],
-        identifiers=env.get("SHEAF_IDENTIFIERS", ""),
-    )
+def chains_from(env: Mapping[str, str]) -> list[str]:
+    """`SHEAF_CHAINS`: the tenant's chains this gateway serves, comma-separated, in full."""
+    chains = [chain.strip() for chain in env.get("SHEAF_CHAINS", "").split(",") if chain.strip()]
+    if not chains or any(not re.fullmatch(r"[a-z0-9-]+/[a-z0-9-]+", chain) for chain in chains):
+        raise RuntimeError("SHEAF_CHAINS names each chain in full, as tenant/workflow")
+    return chains
+
+
+def gateway_from(env: Mapping[str, str], pseudonyms: Pseudonymiser | None = None) -> Gateways:
+    """One gateway for the tenant: every chain in `SHEAF_CHAINS`, over one store, each with its
+    own lease and journal (7.1)."""
+    chains = chains_from(env)
     kind = env.get("SHEAF_STORE")
     if kind == "memory":
         log.warning("SHEAF_STORE=memory: nothing written survives a restart")
-        gateway = Gateway(settings, MemoryStore(), state=MemoryState(), pseudonyms=pseudonyms)
+        store: Store = MemoryStore()
+
+        def state_for(workflow: str) -> GatewayState:
+            return MemoryState()
+
     elif kind == "azure":
         missing = [
             name for name in ("SHEAF_STORAGE_URL", "SHEAF_IMMUTABILITY") if not env.get(name)
@@ -78,18 +90,29 @@ def gateway_from(env: Mapping[str, str], pseudonyms: Pseudonymiser | None = None
 
         credential = ManagedIdentityCredential(client_id=env.get("AZURE_CLIENT_ID"))
         service = BlobServiceClient(env["SHEAF_STORAGE_URL"], credential=credential)
-        gateway = Gateway(
-            settings,
-            BlobStore(
-                service.get_container_client("evidence"), immutability=env["SHEAF_IMMUTABILITY"]
-            ),
-            state=AzureState(service.get_container_client("gateway-state"), settings.workflow),
-            pseudonyms=pseudonyms,
+        store = BlobStore(
+            service.get_container_client("evidence"), immutability=env["SHEAF_IMMUTABILITY"]
         )
+        state_container = service.get_container_client("gateway-state")
+
+        def state_for(workflow: str) -> GatewayState:
+            return AzureState(state_container, workflow)
+
     else:
         raise RuntimeError('SHEAF_STORE is "azure", or "memory" to smoke-test the image')
-    gateway.recover()
-    return gateway
+    gateways = Gateways(
+        Gateway(settings, store, state=state_for(settings.workflow), pseudonyms=pseudonyms)
+        for settings in (
+            Settings(
+                chain=chain,
+                bootstrap_caller=env["SHEAF_BOOTSTRAP_CALLER"],
+                identifiers=env.get("SHEAF_IDENTIFIERS", ""),
+            )
+            for chain in chains
+        )
+    )
+    gateways.recover()
+    return gateways
 
 
 def authenticator_from(

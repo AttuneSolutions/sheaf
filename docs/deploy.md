@@ -21,8 +21,8 @@ before you plan a go-live date.
 | Key Vault | The witness key: EC P-256, not exportable (7.5) |
 | Log Analytics workspace | Container logs and the Key Vault audit log, which the gateway's identity cannot write |
 | Container Apps environment | Internal only: reachable from the virtual network, not the internet |
-| Gateway app | One per workflow, one replica each (7.1) |
-| Witness job | A scheduled job from the same image, with its own identity (7.5) |
+| Gateway app | One for the tenant, serving every workflow's chain, one replica (7.1) |
+| Witness job | One scheduled job for every chain, from the same image, with its own identity (7.5) |
 | Entra ID app registration | The gateway's API: the audience callers ask for tokens to, and its app roles |
 | Two managed identities | The gateway's and the witness's, never shared |
 
@@ -38,7 +38,8 @@ These go into the genesis mandate (5.6). Some cannot change once the tenant has 
 entry; the rest change only through a `config.changed`.
 
 - **Region:** where the record lives. Everything below is created there.
-- **Workflows:** each workflow is one chain and one gateway app (`acme/case-review`).
+- **Workflows:** each workflow is one chain (`acme/case-review`), with its own mandate. One
+  gateway and one witness job serve them all.
 - **Retention classes:** for example `regulated-record` for `P7Y` and `working-file` for `P1Y`.
   The longest class sets how long chain-level blobs are kept (4).
 - **Identifiers:** `clear` or `pseudonymised` (5.7). In clear, people are recorded by their Entra
@@ -212,38 +213,39 @@ An internal environment has a private address and its own default domain. Caller
 network resolve it through a private DNS zone for that domain, with a wildcard record pointing at
 the environment's static IP (`az containerapp env show --query properties.staticIp`).
 
-**The gateway**, one app per workflow, exactly one replica:
+**The gateway**, one app for the tenant, exactly one replica:
 
 ```bash
-az containerapp create -g <rg> -n acme-case-review-gateway --environment <environment> \
+az containerapp create -g <rg> -n acme-sheaf-gateway --environment <environment> \
   --image ghcr.io/attunesolutions/sheaf@sha256:<digest> \
   --user-assigned <gateway identity id> \
   --ingress internal --target-port 8080 --min-replicas 1 --max-replicas 1 \
   --env-vars SHEAF_STORE=azure SHEAF_STORAGE_URL=https://<account>.blob.core.windows.net \
-    SHEAF_IMMUTABILITY=Unlocked SHEAF_CHAIN=acme/case-review \
+    SHEAF_IMMUTABILITY=Unlocked SHEAF_CHAINS=acme/case-review,acme/claims-triage \
     SHEAF_IDENTIFIERS=clear SHEAF_BOOTSTRAP_CALLER=<approver object id> \
     SHEAF_ENTRA_TENANT=<tenant id> SHEAF_ENTRA_AUDIENCE=<application id> \
     AZURE_CLIENT_ID=<gateway identity client id>
 ```
 
 `SHEAF_IMMUTABILITY` becomes `Locked` in section 10. Under pseudonymised identifiers add
-`SHEAF_KEY_VAULT_URL`. On every start the gateway takes the chain-head lease, rebuilds its state
+`SHEAF_KEY_VAULT_URL`. On every start the gateway takes each chain's lease, rebuilds its state
 from the container and finishes any half-written entry from its journal before it accepts a call.
+A chain whose stored record does not add up is halted, and the others carry on.
 
 `<gateway fqdn>` is the gateway's internal address:
-`az containerapp show -g <rg> -n acme-case-review-gateway --query properties.configuration.ingress.fqdn`.
+`az containerapp show -g <rg> -n acme-sheaf-gateway --query properties.configuration.ingress.fqdn`.
 
 **The witness**, daily shortly after midnight UTC, with time for the authorities' retries
 (six hours, 7.2):
 
 ```bash
-az containerapp job create -g <rg> -n acme-case-review-witness --environment <environment> \
+az containerapp job create -g <rg> -n acme-sheaf-witness --environment <environment> \
   --trigger-type Schedule --cron-expression "10 0 * * *" \
   --replica-timeout 25200 --replica-retry-limit 0 --parallelism 1 --replica-completion-count 1 \
   --image ghcr.io/attunesolutions/sheaf@sha256:<digest> \
   --mi-user-assigned <witness identity id> \
   --command "python" --args "-m" "sheaf_witness" \
-  --env-vars SHEAF_CHAIN=acme/case-review \
+  --env-vars SHEAF_CHAINS=acme/case-review,acme/claims-triage \
     SHEAF_GATEWAY_URL=https://<gateway fqdn> \
     SHEAF_GATEWAY_SCOPE=api://<application id>/.default \
     SHEAF_CONTAINER_URL=https://<account>.blob.core.windows.net/evidence \
@@ -256,7 +258,7 @@ A mandate change applies only once it has its interim witness (7.2), so after ea
 `config.changed` start the job by hand rather than waiting for midnight:
 
 ```bash
-az containerapp job start -g <rg> -n acme-case-review-witness
+az containerapp job start -g <rg> -n acme-sheaf-witness
 ```
 
 ## 9 Check before you lock
@@ -287,7 +289,7 @@ etag=$(az storage container immutability-policy show -g <rg> --account-name <acc
   -c evidence --query etag -o tsv)
 az storage container immutability-policy lock -g <rg> --account-name <account> -c evidence \
   --if-match "$etag"
-az containerapp update -g <rg> -n acme-case-review-gateway \
+az containerapp update -g <rg> -n acme-sheaf-gateway \
   --set-env-vars SHEAF_IMMUTABILITY=Locked
 ```
 
@@ -296,15 +298,17 @@ the resource group too, so nobody removes the network or the vault from under th
 
 ## 11 Genesis
 
-The first entry is the genesis `config.changed` (5.6): the approver's own sign-in, the mandate and
-everything it names.
+Each chain's first entry is its genesis `config.changed` (5.6): the approver's own sign-in, the
+chain's mandate and everything it names. Do this once for each chain in `SHEAF_CHAINS`.
 
 1. **Write the mandate** (`sheaf.mandate/1`): the chain, policy (callers and roles), instructions,
    tenant schemas, retention classes, witness interval, `witness_key` (the key id,
    `ES256`, the SHA-256 of its public key in PEM form, and the witness identity's object ID),
    authorities and their assessment, `personal_data`, and `gateway.image` (the digest deployed in
    section 8).
-2. **Upload** the mandate, its instructions and its schemas: `PUT /v1/artefacts/{sha256}`.
+2. **Upload** the mandate, its instructions and its schemas: `PUT /v1/artefacts/{sha256}`, with
+   the chain named in `Sheaf-Chain`. Every upload names the chain whose mandate it is checked
+   against.
 3. **Store the trust files** the mandate names, the witness key's PEM and each authority's root:
    `PUT /v1/trust/{path}`.
 4. **Commit the `config.changed`** with `POST /v1/entries`, signed in as the approver.
@@ -316,6 +320,8 @@ everything it names.
 - **A new image** is a mandate change: commit a `config.changed` naming the new digest as
   `gateway.image`, let it be witnessed, then update the gateway app and the witness job to that
   digest.
+- **A new workflow** is a new chain: add it to `SHEAF_CHAINS` on the gateway and the witness job,
+  let the gateway restart, then give it its own genesis (section 11).
 - **Rotating the witness key** is also a `config.changed`: create a new key version, store its
   public key under `trust/witness-keys/`, and name it in the new mandate.
 - **A halted gateway** answers `503` after a write failed partway or its lease was lost. Restart

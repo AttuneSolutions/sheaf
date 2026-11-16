@@ -4,6 +4,7 @@
          Content-Type             its media type, without parameters
          Sheaf-Kind               its kind (6)
          Sheaf-Sensitivity        client_pii, staff_pii or none
+         Sheaf-Chain              the chain whose mandate it is checked against
          Idempotency-Key          required
          -> 201 (stored) or 200 (already stored): the artefact receipt
 
@@ -32,11 +33,19 @@ from sheaf_core.canonical import InvalidJSON, strict_loads
 from sheaf_core.digest import is_artefact_digest
 from sheaf_core.problems import Problem
 from sheaf_core.trust import MAX_BYTES as TRUST_MAX_BYTES
-from sheaf_gateway.gateway import MAX_ENTRY_BYTES, MAX_WITNESS_BYTES, Gateway, Rejected
+from sheaf_gateway.gateway import (
+    MAX_ENTRY_BYTES,
+    MAX_WITNESS_BYTES,
+    Gateway,
+    Gateways,
+    Rejected,
+)
 from sheaf_gateway.hooks import Authenticator, Caller, refuse_all
 
 
-def create_app(gateway: Gateway, authenticate: Authenticator = refuse_all) -> FastAPI:
+def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse_all) -> FastAPI:
+    if isinstance(gateway, Gateway):
+        gateway = Gateways([gateway])
     # No API description is served: callers are known workloads, and the contract is 7.2.
     app = FastAPI(
         title="Sheaf write gateway",
@@ -75,16 +84,18 @@ def create_app(gateway: Gateway, authenticate: Authenticator = refuse_all) -> Fa
         content_type: Annotated[str, Header()],
         sheaf_kind: Annotated[str, Header()],
         sheaf_sensitivity: Annotated[str, Header()],
+        sheaf_chain: Annotated[str, Header()],
         idempotency_key: Annotated[str, Header()],
     ) -> JSONResponse:
         if not is_artefact_digest(sha256):
             raise Rejected(422, [Problem("sha256_format", "sha256", "64 lower-case hex digits")])
-        limit = gateway.upload_limit(who.id, sheaf_kind, roles=who.roles)
+        limit = gateway.upload_limit(who.id, sheaf_kind, chain=sheaf_chain, roles=who.roles)
         data = await _read_body(request, limit)
         receipt, created = await run_in_threadpool(
             gateway.upload,
             who.id,
             data,
+            chain=sheaf_chain,
             sha256=sha256,
             kind=sheaf_kind,
             media_type=content_type,

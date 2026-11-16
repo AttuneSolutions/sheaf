@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import threading
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
@@ -542,6 +542,111 @@ class Gateway:
             mandate = governing.document
         day = committed.date()
         return max(add_period(day, c["period"]) for c in mandate["retention"]["classes"])
+
+
+class Gateways:
+    """One tenant's gateway (7.1): a `Gateway` for each of its chains, one per workflow, sharing
+    the store. A request reaches the chain it names, and a fault halts only that chain."""
+
+    def __init__(self, gateways: Iterable[Gateway]) -> None:
+        self._by_chain: dict[str, Gateway] = {}
+        for gateway in gateways:
+            if gateway.settings.chain in self._by_chain:
+                raise ValueError(f"{gateway.settings.chain} is served twice")
+            self._by_chain[gateway.settings.chain] = gateway
+        if not self._by_chain:
+            raise ValueError("a gateway serves at least one chain")
+        if len({gateway.settings.tenant for gateway in self._by_chain.values()}) != 1:
+            raise ValueError("a gateway serves one tenant's chains")
+
+    @property
+    def chains(self) -> tuple[str, ...]:
+        return tuple(self._by_chain)
+
+    def recover(self) -> None:
+        """Recover each chain. One that does not add up is halted, holding its lease so nothing
+        else writes to it, and the others carry on."""
+        for chain, gateway in self._by_chain.items():
+            try:
+                gateway.recover()
+            except ChainCorrupt as error:
+                log.critical("halted %s: the stored chain does not add up: %s", chain, error)
+                gateway._halted = f"the stored chain does not add up: {error}"
+
+    def chain(self, chain: Any) -> Gateway:
+        gateway = self._by_chain.get(chain) if isinstance(chain, str) else None
+        if gateway is None:
+            raise _reject(
+                422, "chain_unknown", "$.chain", f"this gateway does not serve {str(chain)[:100]}"
+            )
+        return gateway
+
+    def upload_limit(
+        self, caller: str, kind: str, *, chain: str, roles: Collection[str] = ()
+    ) -> int:
+        return self.chain(chain).upload_limit(caller, kind, roles=roles)
+
+    def upload(
+        self, caller: str, data: bytes, *, chain: str, **declared: Any
+    ) -> tuple[dict[str, Any], bool]:
+        return self.chain(chain).upload(caller, data, **declared)
+
+    def commit(
+        self,
+        caller: str,
+        raw: bytes,
+        idempotency_key: str | None = None,
+        *,
+        roles: Collection[str] = (),
+        person: bool | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        draft = _parse(raw)
+        gateway = self._for(draft.get("chain") if isinstance(draft, dict) else None)
+        return gateway.commit(caller, raw, idempotency_key, roles=roles, person=person)
+
+    def commit_witness(
+        self,
+        caller: str,
+        raw: bytes,
+        idempotency_key: str | None = None,
+        *,
+        roles: Collection[str] = (),
+    ) -> tuple[dict[str, Any], bool]:
+        submission = _parse(raw)
+        entry = submission.get("entry") if isinstance(submission, dict) else None
+        gateway = self._for(entry.get("chain") if isinstance(entry, dict) else None)
+        return gateway.commit_witness(caller, raw, idempotency_key, roles=roles)
+
+    def _for(self, chain: Any) -> Gateway:
+        """The gateway for a request's `chain`. A request with no usable chain goes to the first,
+        whose own checks say exactly what is wrong with it and refuse it."""
+        if isinstance(chain, str):
+            return self.chain(chain)
+        return next(iter(self._by_chain.values()))
+
+    def put_trust(
+        self, caller: str, path: str, data: bytes, *, roles: Collection[str] = ()
+    ) -> bool:
+        """Trust files are the tenant's, not a chain's: whoever may change any chain's mandate
+        may store them."""
+        gateways = list(self._by_chain.values())
+        permitted = [g for g in gateways if g._may_write(caller, roles, "config.changed")]
+        return (permitted or gateways)[0].put_trust(caller, path, data, roles=roles)
+
+    def subject_pseudonym(
+        self, caller: str, subject: Any, *, roles: Collection[str] = ()
+    ) -> dict[str, str]:
+        """For a caller that any chain's mandate in force grants something."""
+        refused: Rejected | None = None
+        for gateway in self._by_chain.values():
+            try:
+                return gateway.subject_pseudonym(caller, subject, roles=roles)
+            except Rejected as error:
+                if error.status != 403:
+                    raise
+                refused = error
+        assert refused is not None
+        raise refused
 
 
 def _trust_paths(mandate: dict[str, Any]) -> list[str]:

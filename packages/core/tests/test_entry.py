@@ -236,7 +236,9 @@ def test_config_changed_is_approved_by_a_person():
 def test_a_witness_entry_is_for_its_own_chain():
     body = t.witness("interim", 7, "sha256:" + "a" * 64, chain="acme/other")
 
-    assert at(check_draft(t.witness_draft(body))) == {("witness_chain", "$.body.chain")}
+    entry = {**t.witness_draft(body), "chain": t.CHAIN}
+
+    assert at(check_draft(entry)) == {("witness_chain", "$.body.chain")}
 
 
 def test_a_witness_entry_type_matches_its_witness():
