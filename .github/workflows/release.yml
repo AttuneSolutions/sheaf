@@ -88,6 +88,9 @@ jobs:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+          # The storage record feeds GitHub's organisation artifact view, which is not used; it
+          # would need another write permission. The signed provenance does not depend on it.
+          create-storage-record: false
 
       # Only version tags get a Release; pushes to main just move :edge.
       # Re-runnable: an existing Release for the tag is updated, not duplicated.
