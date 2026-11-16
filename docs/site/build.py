@@ -9,6 +9,7 @@ import html
 import re
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 from string import Template
 
@@ -17,6 +18,11 @@ from mdit_py_plugins.anchors import anchors_plugin
 
 DOCS = Path(__file__).resolve().parent.parent
 REPOSITORY = "https://github.com/AttuneSolutions/sheaf"
+STATUS = re.compile(
+    r"\*\*Status:\*\* draft (?P<draft>[\d.]+), (?P<date>\d{1,2} [A-Z][a-z]+ \d{4})\. "
+    r"Spec id `(?P<spec>[^`]+)`\. (?P<note>.+)"
+)
+"""The status line under the title, which the page shows as badges in its header."""
 
 
 def slug(title: str) -> str:
@@ -26,8 +32,13 @@ def slug(title: str) -> str:
 
 def build(out: Path) -> None:
     text = (DOCS / "standard.md").read_text(encoding="utf-8")
-    title_line, body = text.split("\n", 1)
+    title_line, rest = text.split("\n", 1)
     title = title_line.removeprefix("# ").strip()
+    status_paragraph, body = rest.strip().split("\n\n", 1)
+    status = STATUS.fullmatch(" ".join(status_paragraph.split()))
+    if status is None:
+        raise SystemExit("docs/standard.md: the status line is not in the form the page expects")
+    updated = datetime.strptime(status["date"], "%d %B %Y").date()
 
     md = MarkdownIt("commonmark", {"html": False}).enable("table")
     md.use(
@@ -69,6 +80,11 @@ def build(out: Path) -> None:
     (out / "index.html").write_text(
         page.substitute(
             title=html.escape(title),
+            draft=html.escape(status["draft"]),
+            spec=html.escape(status["spec"]),
+            note=html.escape(status["note"], quote=True),
+            updated=f"{updated.day} {updated:%b %Y}",
+            updated_iso=updated.isoformat(),
             contents="\n".join(contents),
             body=rendered,
             repository=REPOSITORY,

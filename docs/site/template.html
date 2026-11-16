@@ -10,11 +10,13 @@
 :root {
   --bg: #fbfaf7; --surface: #f2efe8; --text: #1b2a41; --muted: #5a6577;
   --border: #ddd8cc; --accent: #e0a100; --link: #1b2a41; --code: #efebe2;
+  --draft-bg: #fbeec4; --draft-text: #6b4c00;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #11161f; --surface: #182030; --text: #e8e4da; --muted: #9aa3b2;
     --border: #2a3342; --accent: #e0a100; --link: #f2efe8; --code: #1d2636;
+    --draft-bg: #3b300f; --draft-text: #f2cd6b;
   }
 }
 * { box-sizing: border-box; }
@@ -26,13 +28,26 @@ body {
 a { color: var(--link); text-decoration-color: var(--accent); text-underline-offset: 0.18em; }
 a:hover { text-decoration-thickness: 2px; }
 header {
-  border-bottom: 1px solid var(--border); background: var(--surface);
-  padding: 1.25rem 16px;
+  border-top: 4px solid var(--text); border-bottom: 1px solid var(--border);
+  background: var(--surface); padding: 1.1rem 16px;
 }
-.masthead { max-width: 76rem; margin: 0 auto; display: flex; align-items: center; gap: 1rem; }
-.masthead img { width: 56px; height: 56px; flex: none; }
-.masthead h1 { font-size: 1.35rem; line-height: 1.3; margin: 0; }
-.masthead p { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.95rem; }
+.masthead {
+  max-width: 76rem; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between; gap: 0.9rem 1.5rem;
+}
+.brand { display: flex; align-items: center; gap: 0.8rem; }
+.brand img { width: 44px; height: 44px; flex: none; display: block; }
+.brand h1 { font-size: 1.4rem; line-height: 1.2; margin: 0; }
+.brand p { margin: 0.1rem 0 0; color: var(--muted); font-size: 0.92rem; }
+.meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.8rem; font-size: 0.85rem; }
+.meta .spec { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; }
+.meta .draft { background: var(--draft-bg); color: var(--draft-text); border-radius: 4px; padding: 0.2rem 0.55rem; font-weight: 600; }
+.meta time { color: var(--muted); }
+.source {
+  display: inline-flex; align-items: center; gap: 0.45rem; background: var(--text); color: var(--bg);
+  text-decoration: none; font-weight: 600; border-radius: 6px; padding: 0.55rem 0.9rem;
+}
+.source:hover { opacity: 0.9; text-decoration: none; }
 .layout {
   max-width: 76rem; margin: 0 auto; padding: 0 16px;
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 3rem;
@@ -49,6 +64,7 @@ details.toc ol { margin-top: 0.6rem; }
 main { min-width: 0; max-width: 48rem; padding-bottom: 4rem; }
 main h2 { margin-top: 2.6rem; padding-top: 0.6rem; border-top: 1px solid var(--border); font-size: 1.5rem; }
 main h3 { margin-top: 2rem; font-size: 1.18rem; }
+main h2:first-of-type { border-top: none; margin-top: 1.8rem; padding-top: 0; }
 .header-anchor { margin-left: 0.4rem; text-decoration: none; color: var(--muted); opacity: 0; }
 h2:hover .header-anchor, h3:hover .header-anchor, .header-anchor:focus { opacity: 1; }
 code {
@@ -76,13 +92,24 @@ footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 0.
 <body>
 <header>
   <div class="masthead">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="sheaf-dark.svg">
-      <img src="sheaf.svg" alt="Sheaf logo" width="56" height="56">
-    </picture>
-    <div>
-      <h1>$title</h1>
-      <p>Spec id <code>sheaf/1</code> · <a href="$repository">Source and reference implementation on GitHub</a></p>
+    <div class="brand">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="sheaf-dark.svg">
+        <img src="sheaf.svg" alt="" width="44" height="44">
+      </picture>
+      <div>
+        <h1>Sheaf</h1>
+        <p>Evidence dossier standard</p>
+      </div>
+    </div>
+    <div class="meta">
+      <code class="spec">$spec</code>
+      <span class="draft" title="$note">Draft $draft</span>
+      <time datetime="$updated_iso">Updated $updated</time>
+      <a class="source" href="$repository">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M5.5 4 1.5 8l4 4M10.5 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Source on GitHub
+      </a>
     </div>
   </div>
 </header>
