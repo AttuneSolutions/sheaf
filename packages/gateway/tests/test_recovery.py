@@ -1,12 +1,14 @@
 import base64
 import json
+import threading
+import time
 
 import pytest
 
 from sheaf_core import paths
 from sheaf_core import testing as t
 from sheaf_gateway.gateway import Gateway, Rejected, Settings
-from sheaf_gateway.recovery import ChainCorrupt
+from sheaf_gateway.recovery import ChainCorrupt, replay
 from sheaf_gateway.state import LeaseHeld, MemoryState
 from sheaf_gateway.store import MemoryStore
 
@@ -137,6 +139,63 @@ def test_a_store_that_does_not_add_up_refuses_to_start():
 
     with pytest.raises(ChainCorrupt):
         gateway(store, state)
+
+
+class Slow(MemoryStore):
+    """Each read takes a while, as a Blob read does; counts the most reads in flight at once."""
+
+    def __init__(self):
+        super().__init__()
+        self._counting = threading.Lock()
+        self.reading = self.most = 0
+
+    def read(self, path):
+        with self._counting:
+            self.reading += 1
+            self.most = max(self.most, self.reading)
+        try:
+            time.sleep(0.002)
+            return super().read(path)
+        finally:
+            with self._counting:
+                self.reading -= 1
+
+
+def a_longer_chain(store, state, entries=20):
+    g = gateway(store, state)
+    config = genesis(g)
+    run(g, t.AGENT["id"], t.opened(config["hash"]))
+    for _ in range(entries):
+        run(g, t.AGENT["id"], t.ai_exchange())
+    state.release()
+    return g
+
+
+def test_a_restart_reads_several_blobs_at_a_time_and_rebuilds_the_same_chain():
+    store, state = Slow(), MemoryState()
+    head = a_longer_chain(store, state).state.head
+    store.most = 0
+
+    second = gateway(store, state)
+
+    assert second.state.head == head
+    assert store.most > 1
+    assert list(replay(store, t.WORKFLOW, readers=8)) == list(replay(store, t.WORKFLOW, readers=1))
+
+
+def test_reading_ahead_still_reports_the_first_fault_in_the_chain():
+    store, state = MemoryStore(), MemoryState()
+    first = a_longer_chain(store, state)
+    head = first.state.head
+    genesis_blob = paths.entry(paths.chain_dossier(t.WORKFLOW, first.clock()), 1)
+    store._files[genesis_blob] = store._files[genesis_blob].replace(b'"version"', b'"versioN"', 1)
+    last_record = paths.entry(paths.chain_segment(t.WORKFLOW, first.clock()), head[0])
+    store._files[last_record] = b"not a segment record"
+
+    with pytest.raises(ChainCorrupt) as error:
+        gateway(store, state)
+
+    assert str(error.value).startswith("seq 1:")
 
 
 def test_a_second_gateway_cannot_take_the_lease():

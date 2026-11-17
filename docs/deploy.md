@@ -273,9 +273,13 @@ its journal. Until a chain has started, a request for it waits up to 30 seconds 
 refused with `503 gateway_starting` and a `Retry-After`; the witness job keeps asking for up to
 ten minutes. A chain whose stored record does not add up is halted, and the others carry on.
 
-A restart or an update starts the new replica beside the old one. The new one cannot take a
-chain's lease until the old one stops, and when the old one stops it releases its leases, so the
-new one takes over within seconds.
+A restart or an update starts the new replica beside the old one and moves traffic to it before
+stopping the old one. The new one cannot take a chain's lease until the old one stops; the old one
+releases its leases as it stops (if it is killed first, at the end of
+`--termination-grace-period`, the new one waits about a minute for them to expire). The new one
+then rebuilds each chain before serving it, so writes pause for as long as that takes: it reads
+every entry, several at a time, and grows with the chain. The gateway logs how long each chain took
+to start (`acme/case-review started at seq <seq> in <seconds>s`).
 
 `<gateway fqdn>` is the gateway's internal address:
 `az containerapp show -g <rg> -n acme-sheaf-gateway --query properties.configuration.ingress.fqdn`.
@@ -324,12 +328,13 @@ nothing before its genesis entry. Run them as the workloads' identities, not you
 5. The Key Vault audit log shows each signature, in a workspace the gateway cannot write.
 6. The witness job reaches every authority in the mandate, and their tokens verify against the
    roots the mandate pins.
-7. Stop the gateway mid-write and start it again: it finishes the entry from its journal, and no
-   `seq` is skipped or repeated. A restart stops the gateway gracefully, letting each write
-   finish, so first set `--termination-grace-period 0` on the app; then, under load,
-   `az containerapp revision restart` it. The old replica is killed mid-write and the new one
-   takes each chain when the lease expires, about a minute later. Set the grace period back to
-   30 afterwards.
+7. Under load, restart the gateway (`az containerapp revision restart`) and update it (a new
+   revision): no `seq` is skipped or repeated, every refused request is a `503 gateway_starting`
+   that succeeds when retried, and writes pause for about as long as the gateway logs it took to
+   start. Note that time: with `--min-replicas 0` the first request after an idle spell waits for
+   it too. Container Apps moves traffic away from a replica before stopping it, so this does not
+   stop the gateway mid-write; finishing an entry from the journal after a crash is covered by
+   the tests and was confirmed on Blob (the standard's section 11).
 
 Delete the scratch container when done.
 

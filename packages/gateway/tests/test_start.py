@@ -3,7 +3,9 @@ so a replacement can start beside the gateway it replaces; until it holds a chai
 rebuilt that chain, a request waits a little and is then refused with 503. A gateway that stops
 releases its leases, so its replacement takes over at once rather than after the lease expires."""
 
+import logging
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -131,13 +133,17 @@ class FailsOnce(MemoryStore):
     def __init__(self):
         super().__init__()
         self.reads_left = None
+        self._counting = threading.Lock()
 
     def read(self, path):
-        if self.reads_left is not None:
-            self.reads_left -= 1
-            if self.reads_left == 0:
-                self.reads_left = None
-                raise OSError("the read failed")
+        with self._counting:
+            fail = False
+            if self.reads_left is not None:
+                self.reads_left -= 1
+                if self.reads_left == 0:
+                    self.reads_left, fail = None, True
+        if fail:
+            raise OSError("the read failed")
         return super().read(path)
 
 
@@ -158,6 +164,57 @@ def test_a_chain_that_fails_to_start_is_retried_from_scratch():
     assert store.reads_left is None
     assert new.chain(t.CHAIN).state.head == head
     assert run(new.chain(t.CHAIN), t.AGENT["id"], t.ai_exchange())["seq"] == head[0] + 1
+
+
+class Paused(MemoryStore):
+    """Reads stop at the `at`-th until the test lets them carry on."""
+
+    def __init__(self):
+        super().__init__()
+        self.at = None
+        self.reached, self.go = threading.Event(), threading.Event()
+        self._counting, self._count = threading.Lock(), 0
+
+    def read(self, path):
+        with self._counting:
+            self._count += 1
+            pause = self._count == self.at
+        if pause:
+            self.reached.set()
+            assert self.go.wait(5)
+        return super().read(path)
+
+
+def test_a_gateway_stopped_while_it_rebuilds_a_chain_gives_up_and_releases_the_lease(caplog):
+    caplog.set_level(logging.INFO, "sheaf.gateway")
+    store, state = Paused(), MemoryState()
+    old = gateways(store, {t.CHAIN: state})
+    old.recover()
+    config = genesis(old.chain(t.CHAIN))
+    run(old.chain(t.CHAIN), t.AGENT["id"], t.opened(config["hash"]))
+    for _ in range(40):
+        run(old.chain(t.CHAIN), t.AGENT["id"], t.ai_exchange())
+    head = old.chain(t.CHAIN).state.head
+    old.close()
+
+    store.at = store._count + 10
+    new = gateways(store, {t.CHAIN: state})
+    new.start()
+    assert store.reached.wait(5)
+    stopping = threading.Thread(target=new.close)
+    stopping.start()
+    deadline = time.monotonic() + 5
+    while not new.chain(t.CHAIN)._stopping.is_set() and time.monotonic() < deadline:
+        time.sleep(0.001)
+    store.go.set()
+    stopping.join(5)
+
+    assert not stopping.is_alive()
+    assert new.wait_started(5)
+    rebuilt = new.chain(t.CHAIN).state.head
+    assert rebuilt is None or rebuilt[0] < head[0]
+    assert "started at" not in caplog.text
+    state.acquire()  # released on stopping, so free to take
 
 
 def test_a_chain_that_does_not_add_up_is_halted_on_start_and_the_others_serve():

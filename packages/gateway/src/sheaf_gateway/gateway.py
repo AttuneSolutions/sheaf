@@ -145,7 +145,8 @@ class Gateway:
         self.start_wait = self.START_WAIT
         self._leased = False
         self._recovered = False
-        self._closed = False
+        self._stopping = threading.Event()
+        """Set by `close` before it waits for the lock, so a rebuild in progress gives up."""
 
     # -- start ---------------------------------------------------------------------------------
 
@@ -153,17 +154,21 @@ class Gateway:
         """Take the chain-head lease, rebuild the chain state from the container, and finish an
         entry a crash left half-written, from the journal. Refuses to start (ChainCorrupt) if the
         container does not hold an unbroken chain, and raises LeaseHeld while another gateway
-        holds the lease. Called again after any other failure, it rebuilds from scratch."""
+        holds the lease. Called again after any other failure, it rebuilds from scratch. A
+        gateway that stops meanwhile gives up, leaving the chain unstarted."""
         if not self._leased:
             self._own.acquire()
             with self._lock:
-                if self._closed:
+                if self._stopping.is_set():
                     # Stopped while waiting for the lease: give it straight back.
                     self._own.release()
                     return
                 self._leased = True
         with self._lock:
-            self._rebuild()
+            try:
+                self._rebuild()
+            except _Stopping:
+                return
             self._recovered = True
 
     def _rebuild(self) -> None:
@@ -172,6 +177,8 @@ class Gateway:
         self.state = ChainState(self.settings.chain)
         try:
             for entry in replay(self.store, self.settings.workflow):
+                if self._stopping.is_set():
+                    raise _Stopping
                 self.state.apply(entry, artefacts=self.store)
         except ValueError as error:
             raise ChainCorrupt(str(error)) from error
@@ -204,11 +211,11 @@ class Gateway:
         self._own.clear_journal()
 
     def close(self) -> None:
-        """Stop: refuse anything more, once any write in progress has finished, and release the
-        chain-head lease, so a gateway replacing this one takes the chain at once rather than
-        when the lease expires."""
+        """Stop: refuse anything more, once any write in progress has finished or a rebuild in
+        progress has given up, and release the chain-head lease, so a gateway replacing this one
+        takes the chain at once rather than when the lease expires."""
+        self._stopping.set()
         with self._lock:
-            self._closed = True
             if self._halted is None:
                 self._halted = "the gateway is stopping"
             if self._leased:
@@ -727,10 +734,12 @@ class Gateways:
                 except Exception:
                     log.exception("%s did not start; trying again", chain)
                 else:
-                    if not gateway._closed:
+                    if gateway._recovered:
                         head = gateway.state.head
                         took = time.monotonic() - began
                         log.info("%s started at seq %s in %.1fs", chain, head and head[0], took)
+                    else:
+                        log.info("%s: stopped before it started", chain)
                     return
                 self._closing.wait(self.retry)
         finally:
@@ -748,6 +757,8 @@ class Gateways:
     def close(self) -> None:
         """Stop every chain and release its lease (`Gateway.close`)."""
         self._closing.set()
+        for gateway in self._by_chain.values():
+            gateway._stopping.set()  # every rebuild gives up now, not when its turn comes
         for chain, gateway in self._by_chain.items():
             try:
                 gateway.close()
@@ -831,6 +842,10 @@ class Gateways:
                 refused = error
         assert refused is not None
         raise refused
+
+
+class _Stopping(Exception):
+    """The gateway is stopping: a rebuild in progress gives up."""
 
 
 def _halt(chain: str, gateway: Gateway, error: ChainCorrupt) -> None:
