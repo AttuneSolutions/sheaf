@@ -13,6 +13,7 @@ every witness so far), then:
 import base64
 import hashlib
 import json
+import time as clock
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Protocol
@@ -51,9 +52,18 @@ class Container(Protocol):
 
 class GatewayClient:
     def __init__(
-        self, client: httpx.Client, base_url: str, *, headers: Callable[[], Mapping[str, str]]
+        self,
+        client: httpx.Client,
+        base_url: str,
+        *,
+        headers: Callable[[], Mapping[str, str]],
+        wait_for_start: float = 600.0,
+        sleep: Callable[[float], None] = clock.sleep,
     ) -> None:
         self.client, self.base_url, self.headers = client, base_url.rstrip("/"), headers
+        self.wait_for_start, self.sleep = wait_for_start, sleep
+        """How long to keep asking a gateway that answers it is still starting: one scaled to
+        zero rebuilds each chain before it serves it."""
 
     def submit(self, entry: Mapping[str, Any], tokens: Mapping[str, bytes]) -> dict[str, Any]:
         """Submit a witness entry and its tokens. A retry of the same bytes gets the first
@@ -69,7 +79,16 @@ class GatewayClient:
             "Content-Type": "application/json",
             "Idempotency-Key": hashlib.sha256(body).hexdigest(),
         }
-        response = self.client.post(f"{self.base_url}/v1/witnesses", content=body, headers=headers)
+        waited = 0.0
+        while True:
+            response = self.client.post(
+                f"{self.base_url}/v1/witnesses", content=body, headers=headers
+            )
+            delay = _starting(response)
+            if delay is None or waited + delay > self.wait_for_start:
+                break
+            self.sleep(delay)
+            waited += delay
         if response.status_code not in (200, 201):
             try:
                 problems = response.json().get("problems")
@@ -192,6 +211,22 @@ def _follow(
     if seq == 0:
         raise ChainBroken(f"{day}: the genesis day has no entries")
     return seq, digest
+
+
+def _starting(response: httpx.Response) -> int | None:
+    """The seconds to wait if the gateway answered that the chain is still starting, else
+    None."""
+    if response.status_code != 503:
+        return None
+    try:
+        problems = response.json().get("problems") or []
+        codes = {problem.get("code") for problem in problems}
+    except (ValueError, AttributeError):
+        return None
+    if "gateway_starting" not in codes:
+        return None
+    after = response.headers.get("Retry-After", "")
+    return min(int(after), 60) if after.isdigit() and int(after) > 0 else 5
 
 
 def _midnight(day: date) -> datetime:

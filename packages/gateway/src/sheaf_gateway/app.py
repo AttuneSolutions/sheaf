@@ -20,10 +20,16 @@
 
 A rejection is 4xx with {"problems": [{code, path, detail}]}: 401 no caller, 403 not permitted,
 409 an idempotency key or an artefact declared two ways, 413 too large, 422 invalid; 503 when a
-write failed partway or the chain-head lease was lost, until the gateway restarts.
+write failed partway or the chain-head lease was lost, until the gateway restarts, and 503 with
+Retry-After while the chain is starting.
+
+The app answers as soon as it is up and starts its chains in the background (`Gateways.start`),
+so a gateway replacing another can start beside it; when it stops, it releases their leases.
 """
 
 import hashlib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, Request
@@ -47,6 +53,14 @@ from sheaf_gateway.hooks import Authenticator, Caller, refuse_all
 def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse_all) -> FastAPI:
     if isinstance(gateway, Gateway):
         gateway = Gateways([gateway])
+    served = gateway
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        served.start()
+        yield
+        await run_in_threadpool(served.close)
+
     # No API description is served: callers are known workloads, and the contract is 7.2.
     app = FastAPI(
         title="Sheaf write gateway",
@@ -54,7 +68,9 @@ def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
+    app.state.gateway = gateway
 
     @app.exception_handler(Rejected)
     async def rejected(request: Request, error: Rejected) -> JSONResponse:
@@ -63,7 +79,7 @@ def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse
         if len(error.problems) > MAX_PROBLEMS:
             more = len(error.problems) - MAX_PROBLEMS
             problems.append({"code": "more", "path": "$", "detail": f"{more} more not shown"})
-        return JSONResponse({"problems": problems}, status_code=error.status)
+        return JSONResponse({"problems": problems}, status_code=error.status, headers=error.headers)
 
     def caller(request: Request) -> Caller:
         identity = authenticate(request)
@@ -90,7 +106,10 @@ def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse
     ) -> JSONResponse:
         if not is_artefact_digest(sha256):
             raise Rejected(422, [Problem("sha256_format", "sha256", "64 lower-case hex digits")])
-        limit = gateway.upload_limit(who.id, sheaf_kind, chain=sheaf_chain, roles=who.roles)
+        # In the thread pool: it may wait for the chain to start.
+        limit = await run_in_threadpool(
+            gateway.upload_limit, who.id, sheaf_kind, chain=sheaf_chain, roles=who.roles
+        )
         data = await _read_body(request, limit)
         receipt, created = await run_in_threadpool(
             gateway.upload,

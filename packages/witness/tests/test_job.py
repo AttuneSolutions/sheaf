@@ -12,7 +12,7 @@ from sheaf_gateway.app import create_app
 from sheaf_gateway.gateway import Gateway, Settings
 from sheaf_gateway.hooks import Caller
 from sheaf_gateway.store import MemoryStore
-from sheaf_witness.job import ChainBroken, GatewayClient, run_once
+from sheaf_witness.job import ChainBroken, GatewayClient, SubmissionRefused, run_once
 from sheaf_witness.signer import LocalSigner
 from sheaf_witness.stamp import Stamper
 
@@ -172,3 +172,51 @@ def test_the_job_never_signs_a_chain_it_has_not_followed(world):
 
     with pytest.raises(ChainBroken):
         world.run(datetime(2026, 11, 27, 0, 5, tzinfo=UTC))
+
+
+# -- a gateway that is starting -----------------------------------------------------------------
+
+
+def starting(retry_after):
+    problems = [{"code": "gateway_starting", "path": "$", "detail": "starting"}]
+    return httpx.Response(503, json={"problems": problems}, headers={"Retry-After": retry_after})
+
+
+def answering(*responses, wait_for_start=60):
+    queue, slept = list(responses), []
+    client = GatewayClient(
+        httpx.Client(transport=httpx.MockTransport(lambda request: queue.pop(0))),
+        "http://gateway",
+        headers=dict,
+        wait_for_start=wait_for_start,
+        sleep=slept.append,
+    )
+    return client, slept
+
+
+def test_a_starting_gateway_is_asked_again_after_the_wait_it_names():
+    receipt = {"seq": 3, "hash": "sha256:" + "0" * 64, "committed_at": "2026-11-26T00:10:00Z"}
+    client, slept = answering(starting("2"), starting("1"), httpx.Response(201, json=receipt))
+
+    assert client.submit({"type": "witness.daily"}, {}) == receipt
+    assert slept == [2, 1]
+
+
+def test_a_gateway_that_does_not_finish_starting_is_reported():
+    client, slept = answering(*[starting("5")] * 5, wait_for_start=12)
+
+    with pytest.raises(SubmissionRefused) as refused:
+        client.submit({"type": "witness.daily"}, {})
+
+    assert refused.value.status == 503
+    assert slept == [5, 5]
+
+
+def test_a_halted_gateway_is_not_asked_again():
+    halted = [{"code": "gateway_halted", "path": "$", "detail": "a write failed"}]
+    client, slept = answering(httpx.Response(503, json={"problems": halted}))
+
+    with pytest.raises(SubmissionRefused):
+        client.submit({"type": "witness.daily"}, {})
+
+    assert slept == []

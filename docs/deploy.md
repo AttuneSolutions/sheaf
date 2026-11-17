@@ -263,13 +263,19 @@ az containerapp create -g <rg> -n acme-sheaf-gateway --environment <environment>
 `--ingress external` admits the virtual network: the environment is internal, so it has no public
 address at all. `internal` would admit only other apps in the same environment.
 `--min-replicas 0` suits a gateway with little traffic: it then costs nothing while idle, starts
-on the first request, and rebuilds each chain from the container before it answers, which takes
+on the first request, and rebuilds each chain from the container before it serves it, which takes
 longer as the chain grows. Never more than one replica.
 
 `SHEAF_IMMUTABILITY` becomes `Locked` in section 10. Under pseudonymised identifiers add
-`SHEAF_KEY_VAULT_URL`. On every start the gateway takes each chain's lease, rebuilds its state
-from the container and finishes any half-written entry from its journal before it accepts a call.
-A chain whose stored record does not add up is halted, and the others carry on.
+`SHEAF_KEY_VAULT_URL`. On every start the gateway answers at once and, in the background, takes
+each chain's lease, rebuilds its state from the container and finishes any half-written entry from
+its journal. Until a chain has started, a request for it waits up to 30 seconds and is then
+refused with `503 gateway_starting` and a `Retry-After`; the witness job keeps asking for up to
+ten minutes. A chain whose stored record does not add up is halted, and the others carry on.
+
+A restart or an update starts the new replica beside the old one. The new one cannot take a
+chain's lease until the old one stops, and when the old one stops it releases its leases, so the
+new one takes over within seconds.
 
 `<gateway fqdn>` is the gateway's internal address:
 `az containerapp show -g <rg> -n acme-sheaf-gateway --query properties.configuration.ingress.fqdn`.
@@ -309,14 +315,21 @@ nothing before its genesis entry. Run them as the workloads' identities, not you
 1. The gateway's identity creates a blob, sets and extends its retention, and is refused a delete
    and an overwrite (`403 UnauthorizedBlobOverwrite`), even of a blob with no retention of its
    own.
-2. A 100 MiB artefact, the largest kind allows (6), uploads through the internal ingress.
+2. The largest artefact a kind allows (6) uploads through the internal ingress, and one byte
+   more is refused with `413`. Of the kinds whose validators are built, that is
+   `ai.exchange.raw` at 50 MiB (section 13).
 3. Index tags change on an immutable blob; a blob moves to Cold.
 4. The witness's identity signs with the key, a signature verifies with `sheaf_core`, and every
    other key operation is refused. The key cannot be exported.
 5. The Key Vault audit log shows each signature, in a workspace the gateway cannot write.
 6. The witness job reaches every authority in the mandate, and their tokens verify against the
    roots the mandate pins.
-7. Stop the gateway mid-write and start it again: it finishes the entry from its journal.
+7. Stop the gateway mid-write and start it again: it finishes the entry from its journal, and no
+   `seq` is skipped or repeated. A restart stops the gateway gracefully, letting each write
+   finish, so first set `--termination-grace-period 0` on the app; then, under load,
+   `az containerapp revision restart` it. The old replica is killed mid-write and the new one
+   takes each chain when the lease expires, about a minute later. Set the grace period back to
+   30 afterwards.
 
 Delete the scratch container when done.
 
@@ -501,5 +514,7 @@ retention period, and a mandate that cannot be witnessed never applies.
   as a new image, policy or witness key, is made against the API by hand.
 - **The verifier** (9).
 - **Events to readers** (7.2 step 4): the gateway publishes none yet.
+- **Validators** for `document.pdf`, `document.office`, `document.rendition`, `image.raster` and
+  `trace.otel`: an artefact of those kinds is refused with `422 validator_unavailable`.
 - **Optional parts:** malware scanning (7.4), interim witnesses after `dossier.sealed`, and
   revocation data for tokens.

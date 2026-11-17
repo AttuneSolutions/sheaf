@@ -1,11 +1,12 @@
 from datetime import UTC, date, datetime
 
 import pytest
+from azure.core.exceptions import HttpResponseError
 
 from sheaf_core import paths
 from sheaf_core import testing as t
 from sheaf_core.artefact import check_artefact
-from sheaf_gateway.azure import BlobStore
+from sheaf_gateway.azure import AzureState, BlobStore
 from sheaf_gateway.store import BlobConflict
 
 from .fake_azure import FakeContainerClient
@@ -162,3 +163,16 @@ def test_any_other_refusal_is_not_taken_for_an_existing_blob(create_only, monkey
     monkeypatch.setattr(FakeBlobClient, "upload_blob", refused)
     with pytest.raises(HttpResponseError):
         store.put_blob(paths.witness_key(t.KEY_ID), b"first", "application/x-pem-file")
+
+
+def test_a_lease_already_lost_is_given_up_without_an_error(container):
+    class Lost:
+        def release(self):
+            raise HttpResponseError(message="LeaseIdMismatchWithLeaseOperation")
+
+    state = AzureState(container, t.WORKFLOW)
+    state._lease = Lost()
+
+    state.release()
+
+    assert not state.held()

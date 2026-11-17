@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -42,7 +43,7 @@ from sheaf_core.witness import check_attestation
 from sheaf_gateway.hooks import NoEvents, Publisher
 from sheaf_gateway.pseudonyms import Pseudonymiser
 from sheaf_gateway.recovery import ChainCorrupt, replay
-from sheaf_gateway.state import GatewayState, MemoryState
+from sheaf_gateway.state import GatewayState, LeaseHeld, MemoryState
 from sheaf_gateway.store import BlobConflict, Store
 
 log = logging.getLogger("sheaf.gateway")
@@ -80,10 +81,13 @@ class Settings:
 
 
 class Rejected(Exception):
-    def __init__(self, status: int, problems: list[Problem]):
+    def __init__(
+        self, status: int, problems: list[Problem], headers: Mapping[str, str] | None = None
+    ):
         super().__init__(f"{status}: {problems}")
         self.status = status
         self.problems = problems
+        self.headers = dict(headers or {})
 
 
 def _reject(status: int, code: str, path: str, detail: str) -> Rejected:
@@ -101,6 +105,11 @@ def _entry_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class Gateway:
+    START_WAIT = 30.0
+    """How long a request waits for its chain to start before it is refused with 503."""
+    RETRY_AFTER = 5
+    """The seconds a caller refused while the chain starts is told to wait."""
+
     def __init__(
         self,
         settings: Settings,
@@ -130,47 +139,85 @@ class Gateway:
         self._lock = threading.Lock()
         self._halted: str | None = None
         """Why the gateway stopped committing, after a write failed partway."""
+        self._started = threading.Event()
+        self._started.set()
+        """Cleared while the chain starts in the background (`Gateways.start`)."""
+        self.start_wait = self.START_WAIT
+        self._leased = False
+        self._recovered = False
+        self._closed = False
 
     # -- start ---------------------------------------------------------------------------------
 
     def recover(self) -> None:
         """Take the chain-head lease, rebuild the chain state from the container, and finish an
         entry a crash left half-written, from the journal. Refuses to start (ChainCorrupt) if the
-        container does not hold an unbroken chain."""
-        self._own.acquire()
+        container does not hold an unbroken chain, and raises LeaseHeld while another gateway
+        holds the lease. Called again after any other failure, it rebuilds from scratch."""
+        if not self._leased:
+            self._own.acquire()
+            with self._lock:
+                if self._closed:
+                    # Stopped while waiting for the lease: give it straight back.
+                    self._own.release()
+                    return
+                self._leased = True
         with self._lock:
-            try:
-                for entry in replay(self.store, self.settings.workflow):
-                    self.state.apply(entry, artefacts=self.store)
-            except ValueError as error:
-                raise ChainCorrupt(str(error)) from error
-            journal = self._own.read_journal()
-            if journal is None:
-                return
-            record = json.loads(journal)
-            entry = record["entry"]
-            files = {
-                path: (base64.b64decode(data), media_type)
-                for path, (data, media_type) in record["files"].items()
-            }
-            head = self.state.head
-            if entry["seq"] == (head[0] + 1 if head else 1):
-                if entry["prev"] != (head[1] if head else None):
-                    raise ChainCorrupt(f"the journal's seq {entry['seq']} does not follow the head")
-                log.warning("finishing seq %s from the journal", entry["seq"])
-                self._write(entry, files)
-                self._keep_receipt(record.get("receipt"), entry)
-            elif head and entry["seq"] == head[0]:
-                # Its segment record was written, so the replay holds it, but its witness files
-                # or retention may not have been: write them again, without applying it twice.
-                if entry["hash"] != head[1]:
-                    raise ChainCorrupt(f"the journal's seq {entry['seq']} differs from the chain")
-                log.warning("finishing seq %s from the journal", entry["seq"])
-                self._write(entry, files, apply=False)
-                self._keep_receipt(record.get("receipt"), entry)
-            elif entry["seq"] > (head[0] + 1 if head else 1):
-                raise ChainCorrupt(f"the journal holds seq {entry['seq']}, past the head")
-            self._own.clear_journal()
+            self._rebuild()
+            self._recovered = True
+
+    def _rebuild(self) -> None:
+        """Replay the container into a fresh chain state, then finish from the journal. The
+        caller holds the lock."""
+        self.state = ChainState(self.settings.chain)
+        try:
+            for entry in replay(self.store, self.settings.workflow):
+                self.state.apply(entry, artefacts=self.store)
+        except ValueError as error:
+            raise ChainCorrupt(str(error)) from error
+        journal = self._own.read_journal()
+        if journal is None:
+            return
+        record = json.loads(journal)
+        entry = record["entry"]
+        files = {
+            path: (base64.b64decode(data), media_type)
+            for path, (data, media_type) in record["files"].items()
+        }
+        head = self.state.head
+        if entry["seq"] == (head[0] + 1 if head else 1):
+            if entry["prev"] != (head[1] if head else None):
+                raise ChainCorrupt(f"the journal's seq {entry['seq']} does not follow the head")
+            log.warning("finishing seq %s from the journal", entry["seq"])
+            self._write(entry, files)
+            self._keep_receipt(record.get("receipt"), entry)
+        elif head and entry["seq"] == head[0]:
+            # Its segment record was written, so the replay holds it, but its witness files
+            # or retention may not have been: write them again, without applying it twice.
+            if entry["hash"] != head[1]:
+                raise ChainCorrupt(f"the journal's seq {entry['seq']} differs from the chain")
+            log.warning("finishing seq %s from the journal", entry["seq"])
+            self._write(entry, files, apply=False)
+            self._keep_receipt(record.get("receipt"), entry)
+        elif entry["seq"] > (head[0] + 1 if head else 1):
+            raise ChainCorrupt(f"the journal holds seq {entry['seq']}, past the head")
+        self._own.clear_journal()
+
+    def close(self) -> None:
+        """Stop: refuse anything more, once any write in progress has finished, and release the
+        chain-head lease, so a gateway replacing this one takes the chain at once rather than
+        when the lease expires."""
+        with self._lock:
+            self._closed = True
+            if self._halted is None:
+                self._halted = "the gateway is stopping"
+            if self._leased:
+                self._leased = False
+                self._own.release()
+
+    @property
+    def running(self) -> bool:
+        return self._started.is_set() and self._halted is None
 
     # -- 1. upload ----------------------------------------------------------------------------
 
@@ -310,6 +357,7 @@ class Gateway:
         tokens: dict[str, bytes] | None,
         person: bool | None,
     ) -> tuple[dict[str, Any], bool]:
+        self._check_running()
         with self._lock:
             if self._halted is not None:
                 raise _reject(503, "gateway_halted", "$", self._halted)
@@ -455,7 +503,16 @@ class Gateway:
                 ) from error
 
     def _check_running(self) -> None:
-        """A halted chain's state is not trusted for anything until the gateway restarts."""
+        """A chain serves nothing until it has started: a request waits a little for it, and is
+        then refused and told when to try again. A halted chain's state is not trusted for
+        anything until the gateway restarts."""
+        if not self._started.wait(self.start_wait):
+            detail = "the gateway is starting: taking the chain-head lease and rebuilding the chain"
+            raise Rejected(
+                503,
+                [Problem("gateway_starting", "$", detail)],
+                {"Retry-After": str(self.RETRY_AFTER)},
+            )
         if self._halted is not None:
             raise _reject(503, "gateway_halted", "$", self._halted)
 
@@ -614,7 +671,12 @@ class Gateways:
     """One tenant's gateway (7.1): a `Gateway` for each of its chains, one per workflow, sharing
     the store. A request reaches the chain it names, and a fault halts only that chain."""
 
+    RETRY = 5.0
+    """Seconds between attempts to start a chain that could not start yet."""
+
     def __init__(self, gateways: Iterable[Gateway]) -> None:
+        self.retry = self.RETRY
+        self._closing = threading.Event()
         self._by_chain: dict[str, Gateway] = {}
         for gateway in gateways:
             if gateway.settings.chain in self._by_chain:
@@ -630,14 +692,67 @@ class Gateways:
         return tuple(self._by_chain)
 
     def recover(self) -> None:
-        """Recover each chain. One that does not add up is halted, holding its lease so nothing
-        else writes to it, and the others carry on."""
+        """Recover each chain now. One that does not add up is halted, holding its lease so
+        nothing else writes to it, and the others carry on."""
         for chain, gateway in self._by_chain.items():
             try:
                 gateway.recover()
             except ChainCorrupt as error:
-                log.critical("halted %s: the stored chain does not add up: %s", chain, error)
-                gateway._halted = f"the stored chain does not add up: {error}"
+                _halt(chain, gateway, error)
+
+    def start(self) -> None:
+        """Recover each chain in the background, so the gateway answers at once. A gateway
+        replacing another starts beside it: it cannot take a chain's lease until the other one
+        stops, and the other one does not stop until this one answers. Until a chain has
+        started, a request for it waits a little and is then refused with 503."""
+        for chain, gateway in self._by_chain.items():
+            if gateway._recovered or gateway._halted is not None:
+                continue
+            gateway._started.clear()
+            threading.Thread(
+                target=self._start, args=(chain, gateway), daemon=True, name=f"start {chain}"
+            ).start()
+
+    def _start(self, chain: str, gateway: Gateway) -> None:
+        began = time.monotonic()
+        try:
+            while not self._closing.is_set():
+                try:
+                    gateway.recover()
+                except LeaseHeld:
+                    log.info("%s: another gateway still holds the chain-head lease", chain)
+                except ChainCorrupt as error:
+                    _halt(chain, gateway, error)
+                    return
+                except Exception:
+                    log.exception("%s did not start; trying again", chain)
+                else:
+                    if not gateway._closed:
+                        head = gateway.state.head
+                        took = time.monotonic() - began
+                        log.info("%s started at seq %s in %.1fs", chain, head and head[0], took)
+                    return
+                self._closing.wait(self.retry)
+        finally:
+            gateway._started.set()
+
+    def wait_started(self, timeout: float | None = None) -> bool:
+        """Wait until no chain is still starting. False if one still is after `timeout`."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for gateway in self._by_chain.values():
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if not gateway._started.wait(left):
+                return False
+        return True
+
+    def close(self) -> None:
+        """Stop every chain and release its lease (`Gateway.close`)."""
+        self._closing.set()
+        for chain, gateway in self._by_chain.items():
+            try:
+                gateway.close()
+            except Exception:
+                log.exception("%s: the chain-head lease was not released", chain)
 
     def chain(self, chain: Any) -> Gateway:
         gateway = self._by_chain.get(chain) if isinstance(chain, str) else None
@@ -696,7 +811,7 @@ class Gateways:
         """Trust files are the tenant's, not a chain's: whoever may change any running chain's
         mandate may store them. Each is written once and pinned by its SHA-256 in the mandate
         that names it, so a wrong file is never trusted: the mandate naming it is refused."""
-        running = [g for g in self._by_chain.values() if g._halted is None]
+        running = [g for g in self._by_chain.values() if g.running]
         permitted = [g for g in running if g._may_write(caller, roles, "config.changed")]
         chosen = (permitted or running or list(self._by_chain.values()))[0]
         return chosen.put_trust(caller, path, data, roles=roles)
@@ -706,7 +821,7 @@ class Gateways:
     ) -> dict[str, str]:
         """For a caller that any chain's mandate in force grants something."""
         refused: Rejected | None = None
-        running = [g for g in self._by_chain.values() if g._halted is None]
+        running = [g for g in self._by_chain.values() if g.running]
         for gateway in running or list(self._by_chain.values()):
             try:
                 return gateway.subject_pseudonym(caller, subject, roles=roles)
@@ -716,6 +831,11 @@ class Gateways:
                 refused = error
         assert refused is not None
         raise refused
+
+
+def _halt(chain: str, gateway: Gateway, error: ChainCorrupt) -> None:
+    log.critical("halted %s: the stored chain does not add up: %s", chain, error)
+    gateway._halted = f"the stored chain does not add up: {error}"
 
 
 def _trust_paths(mandate: dict[str, Any]) -> list[str]:

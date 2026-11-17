@@ -488,8 +488,9 @@ is stored.
   since a chain has one writer anyway. Its write-ahead journal and the chain-head lease live in a
   separate, mutable `gateway-state` container that only the gateway can write, because a replica's
   local disk does not survive a restart; so do the receipts it keeps for idempotency keys (7.2).
-  The witness (7.5) runs as a scheduled Container Apps job from the same image, with its own
-  identity.
+  A gateway replacing another serves a chain only once it holds that chain's lease, and a
+  gateway that stops releases its leases. The witness (7.5) runs as a scheduled Container Apps
+  job from the same image, with its own identity.
 - Callers authenticate to it with Entra ID: systems with a workload identity, people with their own
   token. The mandate's policy lists which callers, by id or by app role, may write which entry
   types, and each entry's actor is the caller that submitted it.

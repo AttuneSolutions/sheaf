@@ -1,6 +1,8 @@
+import logging
+
 import pytest
 
-from sheaf_witness.__main__ import settings_from
+from sheaf_witness.__main__ import configure_logging, settings_from
 
 
 def test_the_job_refuses_to_start_without_its_settings():
@@ -50,3 +52,9 @@ def test_the_job_is_a_command_of_its_own():
 
     [script] = [e for e in entry_points(group="console_scripts") if e.name == "sheaf-witness"]
     assert script.load() is main
+
+
+def test_the_azure_sdk_logs_only_warnings():
+    configure_logging()
+
+    assert logging.getLogger("azure").level == logging.WARNING

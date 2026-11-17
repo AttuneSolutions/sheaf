@@ -11,10 +11,10 @@
     SHEAF_ENTRA_AUDIENCE     the gateway's application (client) ID, the tokens' audience
     AZURE_CLIENT_ID          azure: the gateway's managed identity, if user-assigned
 
-One gateway serves all of the tenant's chains (7.1). On start it takes each chain's lease and
-rebuilds its state from the container (`Gateways.recover`); a chain the container does not hold
-unbroken is halted, and the others carry on. Without the two Entra settings it refuses every
-request.
+One gateway serves all of the tenant's chains (7.1). It answers at once and, in the background,
+takes each chain's lease and rebuilds its state from the container (`Gateways.start`); a chain
+the container does not hold unbroken is halted, and the others carry on. When it stops it
+releases the leases. Without the two Entra settings it refuses every request.
 """
 
 import logging
@@ -111,7 +111,6 @@ def gateway_from(env: Mapping[str, str], pseudonyms: Pseudonymiser | None = None
             for chain in chains
         )
     )
-    gateways.recover()
     return gateways
 
 
@@ -126,8 +125,14 @@ def authenticator_from(
     return refuse_all
 
 
-def create() -> FastAPI:
+def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO)
+    # The Azure SDK logs every request and response at INFO, which would fill the log workspace.
+    logging.getLogger("azure").setLevel(logging.WARNING)
+
+
+def create() -> FastAPI:
+    configure_logging()
     pseudonyms = pseudonyms_from(os.environ)
     return create_app(
         gateway_from(os.environ, pseudonyms),

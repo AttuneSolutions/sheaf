@@ -13,7 +13,12 @@ import time as clock
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
-from azure.core.exceptions import HttpResponseError, ResourceExistsError, ResourceNotFoundError
+from azure.core.exceptions import (
+    AzureError,
+    HttpResponseError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+)
 from azure.storage.blob import ContentSettings, ImmutabilityPolicy
 
 from sheaf_core import paths
@@ -165,11 +170,15 @@ class AzureState:
                 log.exception("the chain-head lease was not renewed")
 
     def release(self) -> None:
-        """Stop renewing and free the lease, so another gateway can take it at once."""
+        """Stop renewing and free the lease, so another gateway can take it at once. A lease
+        already lost cannot be released, and expires by itself."""
         self._stop.set()
-        if self._lease is not None:
-            self._lease.release()
-            self._lease = None
+        lease, self._lease = self._lease, None
+        if lease is not None:
+            try:
+                lease.release()
+            except AzureError:
+                log.warning("the chain-head lease was not released; it expires by itself")
 
     def held(self) -> bool:
         return (

@@ -1,9 +1,18 @@
+import logging
+
 import pytest
+from fastapi.testclient import TestClient
 
 from sheaf_core import testing as t
 from sheaf_gateway.entra import EntraAuthenticator
 from sheaf_gateway.hooks import refuse_all
-from sheaf_gateway.main import authenticator_from, gateway_from, pseudonyms_from
+from sheaf_gateway.main import (
+    authenticator_from,
+    configure_logging,
+    create,
+    gateway_from,
+    pseudonyms_from,
+)
 from sheaf_gateway.pseudonyms import MemoryPseudonyms
 
 BASE = {
@@ -23,10 +32,26 @@ def test_azure_needs_the_account_and_a_chosen_immutability_mode():
         gateway_from({**BASE, "SHEAF_STORE": "azure"})
 
 
-def test_memory_starts_empty_and_recovered():
+def test_memory_starts_empty():
     gateways = gateway_from({**BASE, "SHEAF_STORE": "memory"})
 
     assert gateways.chain(t.CHAIN).state.head is None
+
+
+def test_the_app_starts_its_chains_when_it_starts(monkeypatch):
+    for name, value in {**BASE, "SHEAF_STORE": "memory"}.items():
+        monkeypatch.setenv(name, value)
+    app = create()
+
+    with TestClient(app):
+        assert app.state.gateway.wait_started(5)
+
+
+def test_the_azure_sdk_logs_only_warnings():
+    # At INFO it logs every request and response, which fills the log workspace under load.
+    configure_logging()
+
+    assert logging.getLogger("azure").level == logging.WARNING
 
 
 def test_one_gateway_serves_every_chain_it_is_given():

@@ -17,6 +17,10 @@ class GatewayState(Protocol):
     def held(self) -> bool:
         """Whether this gateway still holds the lease."""
 
+    def release(self) -> None:
+        """Give up the lease, so another gateway can take it at once. Never raises: a lease
+        that cannot be released expires by itself."""
+
     def write_journal(self, data: bytes) -> None: ...
 
     def read_journal(self) -> bytes | None: ...
@@ -63,9 +67,9 @@ class MemoryState:
     def write_receipt(self, name: str, data: bytes) -> None:
         self._receipts[name] = data
 
-    # For tests.
     def release(self) -> None:
         self._taken = False
 
+    # For tests.
     def lose(self) -> None:
         self._lost = True
