@@ -162,14 +162,24 @@ class Gateway:
                 if self._stopping.is_set():
                     # Stopped while waiting for the lease: give it straight back.
                     self._own.release()
+                    self._give_up()
                     return
                 self._leased = True
         with self._lock:
             try:
                 self._rebuild()
             except _Stopping:
+                self._give_up()
                 return
             self._recovered = True
+
+    def _give_up(self) -> None:
+        """The gateway is stopping before the chain started: refuse everything from now on,
+        before `close` takes the lock, and keep nothing of a rebuild left half done. The caller
+        holds the lock."""
+        self.state = ChainState(self.settings.chain)
+        if self._halted is None:
+            self._halted = "the gateway is stopping"
 
     def _rebuild(self) -> None:
         """Replay the container into a fresh chain state, then finish from the journal. The
@@ -224,7 +234,7 @@ class Gateway:
 
     @property
     def running(self) -> bool:
-        return self._started.is_set() and self._halted is None
+        return self._started.is_set() and self._halted is None and self._recovered
 
     # -- 1. upload ----------------------------------------------------------------------------
 
@@ -513,15 +523,17 @@ class Gateway:
         """A chain serves nothing until it has started: a request waits a little for it, and is
         then refused and told when to try again. A halted chain's state is not trusted for
         anything until the gateway restarts."""
-        if not self._started.wait(self.start_wait):
+        started = self._started.wait(self.start_wait)
+        if started and self._halted is not None:
+            raise _reject(503, "gateway_halted", "$", self._halted)
+        if not started or not self._recovered:
+            # Only a chain rebuilt in full is served: never one whose rebuild gave up or failed.
             detail = "the gateway is starting: taking the chain-head lease and rebuilding the chain"
             raise Rejected(
                 503,
                 [Problem("gateway_starting", "$", detail)],
                 {"Retry-After": str(self.RETRY_AFTER)},
             )
-        if self._halted is not None:
-            raise _reject(503, "gateway_halted", "$", self._halted)
 
     def _may_write(self, caller: str, roles: Collection[str], entry_type: str) -> bool:
         if self.state.head is None:

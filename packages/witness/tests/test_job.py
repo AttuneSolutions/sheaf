@@ -55,6 +55,7 @@ class World:
         self.gateway = Gateway(
             Settings(chain=t.CHAIN, bootstrap_caller=t.APPROVER["id"]), self.store, clock=self.clock
         )
+        self.gateway.recover()
         app = create_app(self.gateway, authenticate=lambda r: _caller(r))
         self.client = GatewayClient(
             TestClient(app), "http://gateway", headers=lambda: {"X-Test-Caller": t.WITNESS["id"]}

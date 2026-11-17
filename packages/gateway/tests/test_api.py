@@ -53,6 +53,7 @@ def parts():
         events=events,
         clock=clock,
     )
+    gateway.recover()
     client = TestClient(create_app(gateway, authenticate=header_caller))
     return client, store, events, clock
 
@@ -537,6 +538,7 @@ def test_after_a_failed_write_the_gateway_refuses_every_commit():
         store,
         clock=Clock(),
     )
+    gateway.recover()
     client = TestClient(create_app(gateway, authenticate=header_caller))
     genesis(client)
     head = gateway.state.head
@@ -562,6 +564,7 @@ def test_a_failing_event_publisher_does_not_fail_a_committed_entry():
         events=Broken(),
         clock=Clock(),
     )
+    gateway.recover()
     client = TestClient(create_app(gateway, authenticate=header_caller))
     config = commit_genesis_config(client)
 

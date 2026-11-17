@@ -217,6 +217,51 @@ def test_a_gateway_stopped_while_it_rebuilds_a_chain_gives_up_and_releases_the_l
     state.acquire()  # released on stopping, so free to take
 
 
+class StopsPartway(MemoryStore):
+    """Signals the gateway to stop at the `at`-th read, as `close` does from another thread."""
+
+    def __init__(self):
+        super().__init__()
+        self.at, self.gateway, self._count = None, None, 0
+
+    def read(self, path):
+        self._count += 1
+        if self._count == self.at:
+            self.gateway._stopping.set()
+        return super().read(path)
+
+
+def test_a_chain_whose_rebuild_gave_up_serves_nothing_before_the_stop_completes():
+    store, state = StopsPartway(), MemoryState()
+    old = gateways(store, {t.CHAIN: state})
+    old.recover()
+    config = genesis(old.chain(t.CHAIN))
+    run(old.chain(t.CHAIN), t.AGENT["id"], t.opened(config["hash"]))
+    for _ in range(10):
+        run(old.chain(t.CHAIN), t.AGENT["id"], t.ai_exchange())
+    old.close()
+
+    new = gateways(store, {t.CHAIN: state})
+    g = new.chain(t.CHAIN)
+    store.at, store.gateway = store._count + 6, g
+    g.recover()  # gives up partway; `close` has signalled but not yet taken the lock
+
+    assert g.state.head is None
+    assert not g.running
+    for call in (
+        lambda: g.upload_limit(t.APPROVER["id"], "data.json"),
+        lambda: run(g, t.AGENT["id"], t.ai_exchange()),
+    ):
+        assert refused(call).status == 503
+
+
+def test_a_chain_never_rebuilt_serves_nothing():
+    g = gateways(MemoryStore(), {t.CHAIN: MemoryState()}).chain(t.CHAIN)
+
+    assert not g.running
+    assert refused(lambda: g.upload_limit(t.APPROVER["id"], "data.json")).status == 503
+
+
 def test_a_chain_that_does_not_add_up_is_halted_on_start_and_the_others_serve():
     store, states = MemoryStore(), {t.CHAIN: MemoryState(), OTHER: MemoryState()}
     old = gateways(store, states)

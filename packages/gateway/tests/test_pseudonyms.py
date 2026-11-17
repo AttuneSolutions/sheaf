@@ -52,6 +52,7 @@ def pseudonymised_world():
     pseudonyms = MemoryPseudonyms()
     settings = Settings(chain=t.CHAIN, bootstrap_caller=APPROVER_OID, identifiers="pseudonymised")
     gateway = Gateway(settings, MemoryStore(), pseudonyms=pseudonyms)
+    gateway.recover()
 
     def header(request):
         oid = request.headers.get("X-Test-Oid")
@@ -243,6 +244,7 @@ def test_a_pseudonym_request_is_a_subject(body):
 
 def test_a_gateway_recording_identifiers_in_clear_makes_no_pseudonyms():
     gateway = Gateway(Settings(chain=t.CHAIN, bootstrap_caller=APPROVER_OID), MemoryStore())
+    gateway.recover()
     client = TestClient(create_app(gateway, authenticate=lambda r: Caller(AGENT_OID, person=False)))
 
     response = client.post("/v1/pseudonyms", json=SUBJECT)

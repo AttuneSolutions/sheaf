@@ -192,6 +192,7 @@ def test_a_new_signing_key_is_fetched_but_not_on_every_unknown_key_id(keys, cloc
 
 def test_the_gateway_answers_401_to_a_bad_token_and_serves_a_good_one(keys, clock):
     gateway = Gateway(Settings(chain=t.CHAIN, bootstrap_caller=CALLER), MemoryStore())
+    gateway.recover()
     app = create_app(
         gateway, authenticate=EntraAuthenticator(TENANT, AUDIENCE, fetch=keys, clock=clock)
     )
