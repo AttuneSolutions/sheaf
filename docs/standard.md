@@ -477,7 +477,8 @@ is stored.
   and journal. A fault in one chain halts only that chain. The image's digest is recorded in each
   mandate (5.6), so the code that validated any entry is known.
 - Its managed identity is the **only** identity with write access to the `evidence` container: a
-  role that can create and read but not delete (immutability blocks deletion anyway).
+  role that can create and read but neither overwrite nor delete (immutability blocks deletion
+  anyway, but not a new current version on top of a protected one).
 - **No other workload may be able to obtain that identity.** On a virtual machine, any process can
   get a token for any managed identity assigned to the machine through the instance metadata
   service, so a caller sharing the gateway's machine could write to storage directly and skip

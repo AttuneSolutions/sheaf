@@ -69,6 +69,14 @@ for zone in privatelink.blob.core.windows.net privatelink.vaultcore.azure.net; d
 done
 ```
 
+**An existing network** serves as well: add the two subnets to it, and create the zones once,
+beside its other private DNS zones (only one zone of each name can be linked to a network). If the
+network uses its own DNS servers, they must forward `blob.core.windows.net` and
+`vaultcore.azure.net` to Azure DNS (`168.63.129.16`). Keep Sheaf's resources in a group of their
+own all the same: the storage account cannot be deleted while any blob is under retention, and
+section 10 locks the group. A NAT gateway on the apps subnet gives the witness a fixed outbound
+address.
+
 Outbound, the witness job needs HTTPS (and HTTP for DigiCert) to the authorities in the mandate,
 and both workloads need Entra ID and the image registry. If outbound traffic goes through a
 firewall, allow: `login.microsoftonline.com`, `ghcr.io` and `pkg-containers.githubusercontent.com`,
@@ -138,13 +146,16 @@ az network private-endpoint dns-zone-group create -g <rg> --endpoint-name <accou
 ## 5 Key Vault and the witness key
 
 ```bash
-az keyvault create -g <rg> -n <vault> -l <region> --enable-rbac-authorization true \
+az keyvault create -g <rg> -n <vault> -l <region> --sku premium --enable-rbac-authorization true \
   --enable-purge-protection true --public-network-access Disabled
-az keyvault key create --vault-name <vault> -n acme-witness --kty EC --curve P-256 --ops sign verify
+az keyvault key create --vault-name <vault> -n acme-witness --kty EC-HSM --curve P-256 \
+  --ops sign verify
 ```
 
 Create the key with no release policy and without `--exportable`, so it can never leave the vault
-(7.5). Its id for the mandate is `<name>/<version>`, for example `acme-witness/<version>`. Add a
+(7.5). `EC-HSM` keeps it in a hardware security module, which needs the Premium tier; Premium has
+no base charge, but an HSM-backed EC key is billed monthly (US$5 at list price). A software key
+(`--kty EC`, any tier) is billed only per operation, and cannot be exported either. Its id for the mandate is `<name>/<version>`, for example `acme-witness/<version>`. Add a
 private endpoint as for Blob (`--group-id vault`, zone `privatelink.vaultcore.azure.net`), and a
 diagnostic setting that sends `AuditEvent` logs to the workspace, so every signature is on record.
 
@@ -162,14 +173,14 @@ nor the witness, which may sign and nothing else. Define two custom roles:
 
 ```json
 { "Name": "Sheaf evidence writer", "IsCustom": true,
-  "Description": "Create and read blobs and their tags. No delete.",
+  "Description": "Create new blobs, read them, set their tags and retention. No overwrite, no delete.",
   "Actions": [], "NotActions": [],
   "DataActions": [
     "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
     "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action",
     "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/read",
-    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/write" ],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/immutableStorage/runAsSuperUser/action" ],
   "NotDataActions": [], "AssignableScopes": ["/subscriptions/<subscription>"] }
 ```
 
@@ -183,8 +194,12 @@ nor the witness, which may sign and nothing else. Define two custom roles:
   "NotDataActions": [], "AssignableScopes": ["/subscriptions/<subscription>"] }
 ```
 
-Whether setting a blob's own retention needs a further data action is one of the checks in section
-9: prove it with the gateway's identity, not your own.
+`add/action` creates a blob but cannot write over one; `blobs/write`, which can, is left out. Under
+version-level immutability an overwrite does not change a protected version, but it would put a
+new current version on top of it. Without it, Azure refuses any upload to an existing blob with
+`403 UnauthorizedBlobOverwrite`, which the gateway reads as "already stored". Setting a blob's own
+retention needs `immutableStorage/runAsSuperUser/action`, which also lets an unlocked policy be
+removed; once section 10 locks it, nobody can remove or shorten it.
 
 | Identity | Role | Scope |
 |---|---|---|
@@ -237,13 +252,19 @@ the environment's static IP (`az containerapp env show --query properties.static
 az containerapp create -g <rg> -n acme-sheaf-gateway --environment <environment> \
   --image ghcr.io/attunesolutions/sheaf@sha256:<digest> \
   --user-assigned <gateway identity id> \
-  --ingress internal --target-port 8080 --min-replicas 1 --max-replicas 1 \
+  --ingress external --target-port 8080 --min-replicas 1 --max-replicas 1 \
   --env-vars SHEAF_STORE=azure SHEAF_STORAGE_URL=https://<account>.blob.core.windows.net \
     SHEAF_IMMUTABILITY=Unlocked SHEAF_CHAINS=acme/case-review,acme/claims-triage \
     SHEAF_IDENTIFIERS=clear SHEAF_BOOTSTRAP_CALLER=<approver object id> \
     SHEAF_ENTRA_TENANT=<tenant id> SHEAF_ENTRA_AUDIENCE=<application id> \
     AZURE_CLIENT_ID=<gateway identity client id>
 ```
+
+`--ingress external` admits the virtual network: the environment is internal, so it has no public
+address at all. `internal` would admit only other apps in the same environment.
+`--min-replicas 0` suits a gateway with little traffic: it then costs nothing while idle, starts
+on the first request, and rebuilds each chain from the container before it answers, which takes
+longer as the chain grows. Never more than one replica.
 
 `SHEAF_IMMUTABILITY` becomes `Locked` in section 10. Under pseudonymised identifiers add
 `SHEAF_KEY_VAULT_URL`. On every start the gateway takes each chain's lease, rebuilds its state
@@ -262,7 +283,7 @@ az containerapp job create -g <rg> -n acme-sheaf-witness --environment <environm
   --replica-timeout 25200 --replica-retry-limit 0 --parallelism 1 --replica-completion-count 1 \
   --image ghcr.io/attunesolutions/sheaf@sha256:<digest> \
   --mi-user-assigned <witness identity id> \
-  --command "python" --args "-m" "sheaf_witness" \
+  --command "sheaf-witness" \
   --env-vars SHEAF_CHAINS=acme/case-review,acme/claims-triage \
     SHEAF_GATEWAY_URL=https://<gateway fqdn> \
     SHEAF_GATEWAY_SCOPE=api://<application id>/.default \
@@ -285,7 +306,9 @@ Run the checks of the standard's section 11 in this region, with every policy st
 against a scratch container (`evidence-check`, with the same settings) so the real container holds
 nothing before its genesis entry. Run them as the workloads' identities, not your own:
 
-1. The gateway's identity writes a blob, sets and extends its retention, and is refused a delete.
+1. The gateway's identity creates a blob, sets and extends its retention, and is refused a delete
+   and an overwrite (`403 UnauthorizedBlobOverwrite`), even of a blob with no retention of its
+   own.
 2. A 100 MiB artefact, the largest kind allows (6), uploads through the internal ingress.
 3. Index tags change on an immutable blob; a blob moves to Cold.
 4. The witness's identity signs with the key, a signature verifies with `sheaf_core`, and every

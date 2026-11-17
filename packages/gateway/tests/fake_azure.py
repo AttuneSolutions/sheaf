@@ -15,8 +15,12 @@ def _error(code):
 
 
 class FakeContainerClient:
-    def __init__(self):
+    def __init__(self, *, may_overwrite=True):
         self.blobs = {}
+        self.may_overwrite = may_overwrite
+        """False as for the gateway's role, which may create blobs (`blobs/add/action`) but not
+        write over one (`blobs/write`): Azure then refuses any upload to an existing blob with
+        403 UnauthorizedBlobOverwrite, before it looks at overwrite=False."""
 
     def get_blob_client(self, name):
         return FakeBlobClient(self, name)
@@ -49,6 +53,10 @@ class FakeBlobClient:
         self, data, *, overwrite=False, content_settings=None, metadata=None, tags=None, **kw
     ):
         if self.name in self.container.blobs:
+            if not self.container.may_overwrite:
+                error = _error("UnauthorizedBlobOverwrite")
+                error.status_code = 403
+                raise error
             if not overwrite:
                 raise ResourceExistsError(self.name)
             if self.container.blobs[self.name].policy is not None:

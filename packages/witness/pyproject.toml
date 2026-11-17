@@ -12,6 +12,9 @@ dependencies = [
     "sheaf-core",
 ]
 
+[project.scripts]
+sheaf-witness = "sheaf_witness.__main__:main"
+
 [tool.uv.sources]
 sheaf-core = { workspace = true }
 

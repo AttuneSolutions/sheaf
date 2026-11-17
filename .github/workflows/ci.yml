@@ -84,7 +84,7 @@ jobs:
           test "$status" = "401"
 
       - name: The witness job is in the same image
-        run: docker run --rm --entrypoint python sheaf:ci -c "import sheaf_witness.__main__"
+        run: docker run --rm --entrypoint sh sheaf:ci -c "command -v sheaf-witness && python -c 'import sheaf_witness.__main__'"
 
       - name: The admin tool is in the same image
         run: docker run --rm --entrypoint sheaf-admin sheaf:ci --help

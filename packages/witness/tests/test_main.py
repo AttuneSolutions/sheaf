@@ -39,3 +39,14 @@ def test_a_chain_that_fails_does_not_stop_the_others():
 
     assert seen == ["acme/case-review", "acme/claims-triage"]
     assert failed == ["acme/case-review"]
+
+
+def test_the_job_is_a_command_of_its_own():
+    # So the job runs as `sheaf-witness`: `az containerapp job create --args "-m" ...` cannot
+    # pass an argument that starts with a dash.
+    from importlib.metadata import entry_points
+
+    from sheaf_witness.__main__ import main
+
+    [script] = [e for e in entry_points(group="console_scripts") if e.name == "sheaf-witness"]
+    assert script.load() is main

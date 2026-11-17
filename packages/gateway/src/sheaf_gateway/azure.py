@@ -27,6 +27,14 @@ log = logging.getLogger("sheaf.gateway")
 MODES = ("Locked", "Unlocked")
 
 
+def _exists(error: HttpResponseError) -> bool:
+    """Whether a create-only upload was refused because the blob is already there. With leave to
+    overwrite, Azure says so with 409; the gateway's role has none (`blobs/write`, deployment
+    guide section 6), and Azure then refuses any upload to an existing blob with 403
+    UnauthorizedBlobOverwrite."""
+    return isinstance(error, ResourceExistsError) or error.error_code == "UnauthorizedBlobOverwrite"
+
+
 class BlobStore:
     def __init__(self, container: Any, *, immutability: str) -> None:
         if immutability not in MODES:
@@ -69,7 +77,9 @@ class BlobStore:
                 metadata=metadata,
                 tags={"kind": info.kind, "sensitivity": info.sensitivity},
             )
-        except ResourceExistsError:
+        except HttpResponseError as error:
+            if not _exists(error):
+                raise
             return False
         return True
 
@@ -88,7 +98,9 @@ class BlobStore:
             self._blob(path).upload_blob(
                 data, overwrite=False, content_settings=ContentSettings(content_type=content_type)
             )
-        except ResourceExistsError:
+        except HttpResponseError as error:
+            if not _exists(error):
+                raise
             if self.read(path) != data:
                 raise BlobConflict(path) from None
             return False

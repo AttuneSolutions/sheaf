@@ -112,3 +112,53 @@ def test_idempotency_receipts_are_kept_in_gateway_state_by_workflow(container):
 
     assert state.read_receipt(name) == b'{"request":"r1"}'
     assert f"receipts/{t.WORKFLOW}/{name}.json" in container.blobs
+
+
+# The gateway's role may create blobs but not write over one (deployment guide, section 6). Azure
+# then answers an upload to an existing blob with 403 UnauthorizedBlobOverwrite, not 409.
+
+
+@pytest.fixture
+def create_only():
+    container = FakeContainerClient(may_overwrite=False)
+    return container, BlobStore(container, immutability="Locked")
+
+
+def test_an_artefact_already_stored_is_left_as_stored_without_overwrite_rights(create_only):
+    container, store = create_only
+    info = receipt()
+    assert store.put_artefact(info, t.INSTRUCTIONS) is True
+    assert store.put_artefact(info, t.INSTRUCTIONS) is False
+    assert store.read(paths.artefact(info.sha256)) == t.INSTRUCTIONS
+
+
+def test_the_same_bytes_again_are_a_no_op_without_overwrite_rights(create_only):
+    # Finishing an entry from the journal writes each of its blobs again.
+    container, store = create_only
+    path = paths.entry(paths.chain_segment(t.WORKFLOW, datetime(2026, 11, 26, tzinfo=UTC)), 1)
+    assert store.put_blob(path, b'{"seq":1}\n', "application/json") is True
+    assert store.put_blob(path, b'{"seq":1}\n', "application/json") is False
+
+
+def test_other_bytes_are_a_conflict_without_overwrite_rights(create_only):
+    container, store = create_only
+    path = paths.witness_key(t.KEY_ID)
+    store.put_blob(path, b"first", "application/x-pem-file")
+    with pytest.raises(BlobConflict):
+        store.put_blob(path, b"second", "application/x-pem-file")
+    assert store.read(path) == b"first"
+
+
+def test_any_other_refusal_is_not_taken_for_an_existing_blob(create_only, monkeypatch):
+    from azure.core.exceptions import HttpResponseError
+
+    from .fake_azure import FakeBlobClient, _error
+
+    container, store = create_only
+
+    def refused(self, data, **kw):
+        raise _error("AuthorizationPermissionMismatch")
+
+    monkeypatch.setattr(FakeBlobClient, "upload_blob", refused)
+    with pytest.raises(HttpResponseError):
+        store.put_blob(paths.witness_key(t.KEY_ID), b"first", "application/x-pem-file")
