@@ -86,12 +86,15 @@ def gateway_from(env: Mapping[str, str], pseudonyms: Pseudonymiser | None = None
         from azure.identity import ManagedIdentityCredential
         from azure.storage.blob import BlobServiceClient
 
-        from sheaf_gateway.azure import AzureState, BlobStore
+        from sheaf_gateway.azure import AzureState, BlobReader, BlobStore
 
         credential = ManagedIdentityCredential(client_id=env.get("AZURE_CLIENT_ID"))
         service = BlobServiceClient(env["SHEAF_STORAGE_URL"], credential=credential)
+        evidence = service.get_container_client("evidence")
         store = BlobStore(
-            service.get_container_client("evidence"), immutability=env["SHEAF_IMMUTABILITY"]
+            evidence,
+            immutability=env["SHEAF_IMMUTABILITY"],
+            reader=BlobReader(evidence.url, credential).read,
         )
         state_container = service.get_container_client("gateway-state")
 

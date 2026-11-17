@@ -7,12 +7,18 @@ applies, as the live check of 16 November 2026 showed.
 """
 
 import contextlib
+import email.utils
 import logging
 import threading
 import time as clock
+from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from urllib.parse import quote
 
+import certifi
+import urllib3
+from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import (
     AzureError,
     HttpResponseError,
@@ -40,11 +46,93 @@ def _exists(error: HttpResponseError) -> bool:
     return isinstance(error, ResourceExistsError) or error.error_code == "UnauthorizedBlobOverwrite"
 
 
+class BlobReadFailed(Exception):
+    """Azure refused a read, or could not answer it, for any reason but a missing blob."""
+
+
+class BlobReader:
+    """Reads a blob's bytes with one plain GET, authorised with the gateway's Entra token.
+
+    Every start replays the whole chain, two blob reads an entry. Through the SDK each read costs
+    about 1.5 ms of CPU (a client, a pipeline and a downloader, for a few hundred bytes), and on
+    half a vCPU that, not Azure, set how long a start took. Writes, properties and listings stay
+    on the SDK."""
+
+    SCOPE = "https://storage.azure.com/.default"
+    VERSION = "2025-01-05"
+    """The Blob service version asked for: any from 2017-11-09 accepts an Entra token."""
+    REFRESH = 300
+    """Seconds before a token expires that the next one is fetched."""
+    CONNECTIONS = 16
+    """Connections kept open: more than a replay reads at once (`recovery.READERS`)."""
+
+    def __init__(
+        self,
+        container_url: str,
+        credential: TokenCredential,
+        *,
+        http: Any = None,
+        clock: Callable[[], float] = clock.time,
+    ) -> None:
+        if not container_url.lower().startswith("https://"):
+            raise ValueError("the Blob reader sends its token only over HTTPS")
+        self.container_url = container_url.rstrip("/")
+        self._credential, self._clock = credential, clock
+        self._http = http or urllib3.PoolManager(
+            maxsize=self.CONNECTIONS,
+            ca_certs=certifi.where(),
+            timeout=urllib3.Timeout(connect=10, read=60),
+            retries=urllib3.Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=(408, 429, 500, 502, 503, 504),
+                allowed_methods=frozenset({"GET"}),
+                raise_on_status=False,
+            ),
+        )
+        self._token: AccessToken | None = None
+        self._token_lock = threading.Lock()
+
+    def _bearer(self) -> str:
+        with self._token_lock:
+            if self._token is None or self._token.expires_on - self._clock() <= self.REFRESH:
+                self._token = self._credential.get_token(self.SCOPE)
+            return self._token.token
+
+    def read(self, path: str) -> bytes | None:
+        """The blob's bytes, or None if there is no such blob. Raises BlobReadFailed for any
+        other answer, a missing container among them."""
+        response = self._http.request(
+            "GET",
+            f"{self.container_url}/{quote(path, safe='/')}",
+            headers={
+                "Authorization": f"Bearer {self._bearer()}",
+                "x-ms-version": self.VERSION,
+                "x-ms-date": email.utils.formatdate(usegmt=True),
+            },
+        )
+        if response.status == 200:
+            return response.data
+        code = response.headers.get("x-ms-error-code", "")
+        if response.status == 404 and code == "BlobNotFound":
+            return None
+        raise BlobReadFailed(f"{path}: HTTP {response.status} {code}".rstrip())
+
+
 class BlobStore:
-    def __init__(self, container: Any, *, immutability: str) -> None:
+    def __init__(
+        self,
+        container: Any,
+        *,
+        immutability: str,
+        reader: Callable[[str], bytes | None] | None = None,
+    ) -> None:
+        """`reader` reads a blob's bytes (`BlobReader.read`); without one, reads go through the
+        SDK."""
         if immutability not in MODES:
             raise ValueError(f"the immutability mode is one of {', '.join(MODES)}")
         self.container, self.immutability = container, immutability
+        self._read = reader or self._read_with_sdk
 
     def _blob(self, path: str) -> Any:
         return self.container.get_blob_client(path)
@@ -112,6 +200,9 @@ class BlobStore:
         return True
 
     def read(self, path: str) -> bytes | None:
+        return self._read(path)
+
+    def _read_with_sdk(self, path: str) -> bytes | None:
         try:
             return self._blob(path).download_blob().readall()
         except ResourceNotFoundError:

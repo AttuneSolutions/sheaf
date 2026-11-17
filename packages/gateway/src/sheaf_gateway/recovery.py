@@ -22,7 +22,8 @@ from sheaf_core.digest import entry_hash
 from sheaf_gateway.store import Store
 
 READERS = 8
-"""Blobs read at once while replaying: fewer than the ten connections the Azure SDK pools."""
+"""Blobs read at once while replaying: fewer than the connections the Blob reader keeps open
+(`azure.BlobReader.CONNECTIONS`)."""
 
 
 class ChainCorrupt(Exception):

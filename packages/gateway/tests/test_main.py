@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sheaf_core import testing as t
+from sheaf_gateway.azure import BlobReader
 from sheaf_gateway.entra import EntraAuthenticator
 from sheaf_gateway.hooks import refuse_all
 from sheaf_gateway.main import (
@@ -30,6 +31,21 @@ def test_the_gateway_needs_a_store_named():
 def test_azure_needs_the_account_and_a_chosen_immutability_mode():
     with pytest.raises(RuntimeError, match="SHEAF_STORAGE_URL, SHEAF_IMMUTABILITY"):
         gateway_from({**BASE, "SHEAF_STORE": "azure"})
+
+
+def test_on_azure_blobs_are_read_with_plain_gets_from_the_evidence_container():
+    gateways = gateway_from(
+        {
+            **BASE,
+            "SHEAF_STORE": "azure",
+            "SHEAF_STORAGE_URL": "https://acme.blob.core.windows.net",
+            "SHEAF_IMMUTABILITY": "Locked",
+        }
+    )
+
+    reader = gateways.chain(t.CHAIN).store._read.__self__
+    assert isinstance(reader, BlobReader)
+    assert reader.container_url == "https://acme.blob.core.windows.net/evidence"
 
 
 def test_memory_starts_empty():

@@ -1026,9 +1026,11 @@ dependencies = [
     { name = "azure-identity" },
     { name = "azure-keyvault-secrets" },
     { name = "azure-storage-blob" },
+    { name = "certifi" },
     { name = "fastapi" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "sheaf-core" },
+    { name = "urllib3" },
     { name = "uvicorn" },
 ]
 
@@ -1037,9 +1039,11 @@ requires-dist = [
     { name = "azure-identity", specifier = ">=1.27.0" },
     { name = "azure-keyvault-secrets", specifier = ">=4.12.0" },
     { name = "azure-storage-blob", specifier = ">=12.31.1" },
+    { name = "certifi", specifier = ">=2026.10.23" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "sheaf-core", editable = "packages/core" },
+    { name = "urllib3", specifier = ">=2.8.0" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
 

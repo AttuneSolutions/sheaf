@@ -1,12 +1,15 @@
+import time
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import pytest
+from azure.core.credentials import AccessToken
 from azure.core.exceptions import HttpResponseError
 
 from sheaf_core import paths
 from sheaf_core import testing as t
 from sheaf_core.artefact import check_artefact
-from sheaf_gateway.azure import AzureState, BlobStore
+from sheaf_gateway.azure import AzureState, BlobReader, BlobReadFailed, BlobStore
 from sheaf_gateway.store import BlobConflict
 
 from .fake_azure import FakeContainerClient
@@ -176,3 +179,95 @@ def test_a_lease_already_lost_is_given_up_without_an_error(container):
     state.release()
 
     assert not state.held()
+
+
+# -- reading a blob with one plain GET -----------------------------------------------------------
+
+URL = "https://acme.blob.core.windows.net/evidence"
+
+
+class FakeHttp:
+    """Answers each request in turn with (status, body, headers), and records it."""
+
+    def __init__(self, *answers):
+        self.answers, self.requests = list(answers), []
+
+    def request(self, method, url, headers=None, **kw):
+        self.requests.append((method, url, dict(headers or {})))
+        status, body, headers = self.answers.pop(0)
+        return SimpleNamespace(status=status, data=body, headers=headers)
+
+
+class FakeCredential:
+    def __init__(self, clock=time.time, lifetime=3600):
+        self.clock, self.lifetime, self.issued = clock, lifetime, 0
+
+    def get_token(self, *scopes):
+        assert scopes == ("https://storage.azure.com/.default",)
+        self.issued += 1
+        return AccessToken(f"token-{self.issued}", int(self.clock()) + self.lifetime)
+
+
+def test_a_blob_is_read_with_one_authorised_get():
+    http = FakeHttp((200, b"the bytes", {}))
+    reader = BlobReader(URL, FakeCredential(), http=http)
+
+    assert reader.read("chain/case-review/2026/11/26/0000000000000001.json") == b"the bytes"
+
+    [(method, url, headers)] = http.requests
+    assert method == "GET"
+    assert url == f"{URL}/chain/case-review/2026/11/26/0000000000000001.json"
+    assert headers["Authorization"] == "Bearer token-1"
+    assert headers["x-ms-version"] and headers["x-ms-date"]
+
+
+def test_a_blob_name_is_quoted_in_its_url():
+    http = FakeHttp((200, b"", {}))
+
+    BlobReader(URL, FakeCredential(), http=http).read("dossiers/case-review/2026/11/a b%.json")
+
+    assert http.requests[0][1] == f"{URL}/dossiers/case-review/2026/11/a%20b%25.json"
+
+
+def test_only_a_missing_blob_reads_as_nothing():
+    http = FakeHttp(
+        (404, b"", {"x-ms-error-code": "BlobNotFound"}),
+        (404, b"", {"x-ms-error-code": "ContainerNotFound"}),
+        (403, b"", {"x-ms-error-code": "AuthorizationPermissionMismatch"}),
+        (500, b"", {}),
+    )
+    reader = BlobReader(URL, FakeCredential(), http=http)
+
+    assert reader.read("chain/x") is None
+    for code in ("ContainerNotFound", "AuthorizationPermissionMismatch", "500"):
+        with pytest.raises(BlobReadFailed, match=code):
+            reader.read("chain/x")
+
+
+def test_the_token_is_kept_until_five_minutes_before_it_expires():
+    now = [1_000_000.0]
+    credential = FakeCredential(clock=lambda: now[0])
+    http = FakeHttp(*[(200, b"", {})] * 3)
+    reader = BlobReader(URL, credential, http=http, clock=lambda: now[0])
+
+    reader.read("a")
+    now[0] += 3600 - 301
+    reader.read("a")
+    assert credential.issued == 1
+
+    now[0] += 2
+    reader.read("a")
+    assert credential.issued == 2
+    assert http.requests[-1][2]["Authorization"] == "Bearer token-2"
+
+
+def test_the_store_reads_through_the_reader_it_is_given(container):
+    store = BlobStore(container, immutability="Locked", reader=lambda path: f"read {path}".encode())
+
+    assert store.read("chain/x") == b"read chain/x"
+    assert store.trust("trust/x") == b"read trust/x"
+
+
+def test_a_token_is_sent_only_over_https():
+    with pytest.raises(ValueError, match="HTTPS"):
+        BlobReader("http://acme.blob.core.windows.net/evidence", FakeCredential(), http=FakeHttp())
