@@ -107,8 +107,10 @@ jobs:
           {
             echo "## Container image"
             echo
-            echo "One image for the gateway and the witness job, built for \`linux/amd64\` and"
-            echo "\`linux/arm64\`, with build provenance attached."
+            echo "One image for every Sheaf workload, built for \`linux/amd64\` and \`linux/arm64\`,"
+            echo "with build provenance attached: the gateway (the default command), the witness"
+            echo "job (\`sheaf-witness\`), the approval page (\`sheaf-approve\`) and the admin tool"
+            echo "(\`sheaf-admin\`)."
             echo
             echo '```'
             echo "docker pull ${IMAGE}@${DIGEST}"
