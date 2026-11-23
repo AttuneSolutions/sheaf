@@ -62,6 +62,7 @@
         "changed",
         "mandate",
         "parts",
+        "proposed_by",
         "approved_by",
         "reason"
       ],
@@ -162,6 +163,26 @@
             },
             "gateway": {
               "$ref": "urn:sheaf:sheaf.defs/1#/$defs/entry_digest"
+            }
+          }
+        },
+        "proposed_by": {
+          "description": "who staged the change (7.6): a person, or a workload such as a release pipeline. The gateway records the proposal's own proposer",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "person",
+                "system"
+              ]
+            },
+            "id": {
+              "$ref": "urn:sheaf:sheaf.defs/1#/$defs/identity"
             }
           }
         },

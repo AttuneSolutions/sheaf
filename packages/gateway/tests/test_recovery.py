@@ -48,6 +48,8 @@ def genesis(g):
         )
     for path, data in t.trust_files(doc).items():
         g.put_trust(approver, path, data)
+    request = {"chain": t.CHAIN, "mandate": t.artefact_sha256(t.mandate_bytes(doc))}
+    g.propose(t.PROPOSER["id"], {**request, "reason": "genesis"}, roles=("proposer",), person=True)
     config = run(g, approver, t.config_changed(doc))
     witness, tokens = t.attested("interim", 1, config["hash"])
     body = {
@@ -349,3 +351,32 @@ def test_an_upload_whose_receipt_is_not_kept_asks_for_a_retry_and_the_retry_succ
     assert refused.value.status == 503
 
     assert g.upload(t.APPROVER["id"], t.INSTRUCTIONS, **upload)[1] is False
+
+
+class LosesProposalWritesOnce(MemoryState):
+    """Keeps the proposal as staged, then fails the write that marks it approved."""
+
+    failing = False
+
+    def write_proposal(self, sha256, data):
+        if self.failing and b'"approved"' in data:
+            self.failing = False
+            raise OSError("gateway-state unreachable")
+        super().write_proposal(sha256, data)
+
+
+def test_a_proposal_whose_approval_was_not_noted_is_noted_from_the_journal_on_restart():
+    store, state = MemoryStore(), LosesProposalWritesOnce()
+    first = gateway(store, state)
+    state.failing = True
+    with pytest.raises(Rejected) as halted:
+        genesis(first)
+    assert halted.value.status == 503
+    state.release()
+
+    second = gateway(store, state)
+
+    sha256 = t.artefact_sha256(t.mandate_bytes(t.mandate_document()))
+    noted = json.loads(state.read_proposal(sha256))
+    assert noted["status"] == "approved"
+    assert noted["approved"]["seq"] == 1 == second.state.head[0]

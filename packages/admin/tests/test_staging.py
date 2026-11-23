@@ -1,5 +1,5 @@
-"""Building a chain's genesis from what a person writes, and checking it offline with the rules the
-gateway runs, before anything is sent."""
+"""Building a mandate from what a person writes, and checking it offline with the rules the gateway
+runs, before anything is staged."""
 
 import hashlib
 import json
@@ -9,25 +9,26 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from sheaf_admin.genesis import InputError, load
+from sheaf_admin.staging import InputError, load
 from sheaf_core import testing as t
 from sheaf_core.canonical import strict_loads
 from sheaf_core.digest import artefact_sha256
 from sheaf_core.mandate import PARTS, part_digests
+from sheaf_core.proposal import STAND_IN_APPROVER
 from sheaf_witness import catalogue
 
 NOW = datetime(2026, 11, 26, 9, 0, tzinfo=UTC)
 
 
-def test_the_mandate_names_each_file_by_its_sha256(genesis_file):
-    genesis = load(genesis_file())
+def test_the_mandate_names_each_file_by_its_sha256(input_file):
+    genesis = load(input_file())
     assert genesis.mandate == t.mandate_document()
     assert genesis.chain == t.CHAIN
-    assert genesis.approver == t.APPROVER["id"]
+    assert genesis.fingerprint == artefact_sha256(genesis.uploads[0].data)
 
 
-def test_the_uploads_are_the_mandate_its_instructions_and_its_schemas(genesis_file):
-    genesis = load(genesis_file())
+def test_the_uploads_are_the_mandate_its_instructions_and_its_schemas(input_file):
+    genesis = load(input_file())
     described = [(u.role, u.kind, u.media_type, u.sensitivity) for u in genesis.uploads]
     assert described == [
         ("mandate", "data.json", "application/json", "none"),
@@ -40,16 +41,16 @@ def test_the_uploads_are_the_mandate_its_instructions_and_its_schemas(genesis_fi
     assert mandate.sha256 == artefact_sha256(mandate.data)
 
 
-def test_the_trust_files_are_the_witness_key_and_each_authority_root(genesis_file):
-    assert load(genesis_file()).trust == t.trust_files()
+def test_the_trust_files_are_the_witness_key_and_each_authority_root(input_file):
+    assert load(input_file()).trust == t.trust_files()
 
 
-def test_the_genesis_entry_is_the_approvers_config_changed_with_no_previous(genesis_file):
-    genesis = load(genesis_file())
+def test_the_offline_check_is_of_a_genesis_config_changed_from_a_stand_in_approver(input_file):
+    genesis = load(input_file())
     entry = genesis.draft(NOW)
     assert entry["type"] == "config.changed"
     assert (entry["chain"], entry["tenant"], entry["dossier"]) == (t.CHAIN, t.TENANT, None)
-    assert entry["actor"] == t.APPROVER
+    assert entry["actor"] == {"kind": "person", "id": STAND_IN_APPROVER}
     assert entry["observed_at"] == "2026-11-26T09:00:00.000Z"
     assert entry["artefacts"] == [
         {
@@ -68,26 +69,34 @@ def test_the_genesis_entry_is_the_approvers_config_changed_with_no_previous(gene
         "changed": list(PARTS),
         "mandate": genesis.uploads[0].sha256,
         "parts": part_digests(t.mandate_document()),
-        "approved_by": t.APPROVER,
+        "proposed_by": {"kind": "system", "id": "sheaf-admin-check"},
+        "approved_by": {"kind": "person", "id": STAND_IN_APPROVER},
         "reason": "genesis",
     }
 
 
-def test_a_good_genesis_has_no_problems(genesis_file):
-    assert load(genesis_file()).check(NOW) == []
+def test_a_good_genesis_has_no_problems(input_file):
+    assert load(input_file()).check(NOW) == []
 
 
-def test_the_reason_may_be_given(tmp_path, genesis_file):
-    path = genesis_file()
+def test_the_reason_may_be_given(tmp_path, input_file):
+    path = input_file()
     doc = json.loads(path.read_text())
     path.write_text(json.dumps({**doc, "reason": "Case review starts recording."}))
-    assert load(path).draft(NOW)["body"]["reason"] == "Case review starts recording."
+    staged = load(path)
+    assert staged.reason == "Case review starts recording."
+    assert staged.request() == {
+        "chain": t.CHAIN,
+        "mandate": staged.fingerprint,
+        "reason": "Case review starts recording.",
+    }
+    assert staged.request(expires_in_days=3)["expires_in_days"] == 3
 
 
-def test_authorities_may_be_named_from_the_catalogue(genesis_file):
+def test_authorities_may_be_named_from_the_catalogue(input_file):
     assessment = t.mandate_document()["authorities"]["assessment"]
     names = [authority.authority for authority in catalogue.default()]
-    genesis = load(genesis_file(authorities={"list": names, "assessment": assessment}))
+    genesis = load(input_file(authorities={"list": names, "assessment": assessment}))
     assert genesis.mandate["authorities"] == catalogue.default_authorities(
         by=assessment["by"], date=assessment["date"], statement=assessment["statement"]
     )
@@ -96,12 +105,10 @@ def test_authorities_may_be_named_from_the_catalogue(genesis_file):
     assert genesis.check(NOW) == []
 
 
-def test_an_authority_not_in_the_catalogue_is_refused(genesis_file):
+def test_an_authority_not_in_the_catalogue_is_refused(input_file):
     assessment = t.mandate_document()["authorities"]["assessment"]
     with pytest.raises(InputError, match="no-such-tsa.*freetsa"):
-        load(
-            genesis_file(authorities={"list": ["freetsa", "no-such-tsa"], "assessment": assessment})
-        )
+        load(input_file(authorities={"list": ["freetsa", "no-such-tsa"], "assessment": assessment}))
 
 
 @pytest.mark.parametrize(
@@ -119,13 +126,13 @@ def test_an_authority_not_in_the_catalogue_is_refused(genesis_file):
         ),
     ],
 )
-def test_a_digest_in_place_of_its_file_is_refused(genesis_file, part, value, where):
+def test_a_digest_in_place_of_its_file_is_refused(input_file, part, value, where):
     # The tool computes every digest from the bytes it uploads, so the two cannot disagree.
     with pytest.raises(InputError, match=where + ".*file"):
-        load(genesis_file(**{part: value}))
+        load(input_file(**{part: value}))
 
 
-def test_a_witness_key_digest_in_place_of_its_file_is_refused(genesis_file):
+def test_a_witness_key_digest_in_place_of_its_file_is_refused(input_file):
     key = {
         "key_id": t.KEY_ID,
         "algorithm": "ES256",
@@ -133,26 +140,26 @@ def test_a_witness_key_digest_in_place_of_its_file_is_refused(genesis_file):
         "identity": t.WITNESS["id"],
     }
     with pytest.raises(InputError, match=r"\$\.mandate\.witness_key.*public_key"):
-        load(genesis_file(witness_key=key))
+        load(input_file(witness_key=key))
 
 
-def test_a_missing_file_is_refused(genesis_file):
+def test_a_missing_file_is_refused(input_file):
     with pytest.raises(InputError, match=r"instructions/missing\.md"):
-        load(genesis_file(instructions=[{"name": "review", "file": "instructions/missing.md"}]))
+        load(input_file(instructions=[{"name": "review", "file": "instructions/missing.md"}]))
 
 
-def test_the_approver_is_required(tmp_path, genesis_file):
-    path = genesis_file()
+def test_the_approver_is_not_named_in_the_input(input_file):
+    # Whoever approves the proposal is its approver, so the file cannot name one.
+    path = input_file()
     doc = json.loads(path.read_text())
-    del doc["approver"]
-    path.write_text(json.dumps(doc))
-    with pytest.raises(InputError, match="approver"):
+    path.write_text(json.dumps({"approver": t.APPROVER["id"], **doc}))
+    with pytest.raises(InputError, match="approver.*whoever approves"):
         load(path)
 
 
 def test_input_that_is_not_json_is_refused(tmp_path):
     path = tmp_path / "genesis.json"
-    path.write_text('{"approver": "a", "approver": "b"}')
+    path.write_text('{"reason": "a", "reason": "b"}')
     with pytest.raises(InputError, match="genesis.json"):
         load(path)
 
@@ -200,15 +207,15 @@ def _unknown_registry(d):
         (_unknown_registry, "registry_unknown"),
     ],
 )
-def test_check_finds_what_the_gateway_would_refuse(genesis_file, change, code):
-    path = genesis_file()
+def test_check_finds_what_the_gateway_would_refuse(input_file, change, code):
+    path = input_file()
     doc = json.loads(path.read_text())
     path.write_text(json.dumps({**doc, "mandate": change(doc["mandate"])}))
     assert code in [problem.code for problem in load(path).check(NOW)]
 
 
-def test_check_finds_a_witness_key_the_gateway_would_not_store(genesis_file, tmp_path):
-    genesis_file()
+def test_check_finds_a_witness_key_the_gateway_would_not_store(input_file, tmp_path):
+    input_file()
     (tmp_path / "witness.pem").write_bytes(_p384_pem())
     problems = load(tmp_path / "genesis.json").check(NOW)
     assert [(p.code, p.path) for p in problems] == [
@@ -216,8 +223,22 @@ def test_check_finds_a_witness_key_the_gateway_would_not_store(genesis_file, tmp
     ]
 
 
-def test_check_finds_a_tenant_schema_whose_id_is_not_its_name(genesis_file, tmp_path):
-    genesis_file()
+def test_check_finds_a_tenant_schema_whose_id_is_not_its_name(input_file, tmp_path):
+    input_file()
     (tmp_path / "schemas" / "findings.json").write_bytes(_schema_with_id("urn:sheaf:acme.other/1"))
     problems = load(tmp_path / "genesis.json").check(NOW)
     assert [p.code for p in problems] == ["schema_id_mismatch"]
+
+
+@pytest.mark.parametrize("name", ["../outside.md", "/etc/hostname", "escape.md"])
+def test_a_named_file_must_be_inside_the_input_folder(input_file, tmp_path, name):
+    outside = tmp_path.parent / "outside.md"
+    outside.write_bytes(b"# not part of the mandate\n")
+    path = input_file()
+    (path.parent / "escape.md").symlink_to(outside)
+    doc = json.loads(path.read_text())
+    doc["mandate"]["instructions"][0]["file"] = name
+    path.write_text(json.dumps(doc))
+
+    with pytest.raises(InputError, match="inside"):
+        load(path)

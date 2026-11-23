@@ -25,6 +25,10 @@ class FakeContainerClient:
     def get_blob_client(self, name):
         return FakeBlobClient(self, name)
 
+    def list_blobs(self, name_starts_with=""):
+        names = sorted(name for name in self.blobs if name.startswith(name_starts_with))
+        return [SimpleNamespace(name=name) for name in names]
+
     def walk_blobs(self, name_starts_with="", delimiter="/"):
         found = set()
         for name in self.blobs:

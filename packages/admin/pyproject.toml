@@ -1,7 +1,7 @@
 [project]
 name = "sheaf-admin"
 version = "0.1.0"
-description = "What a tenant's people run against the Sheaf gateway: a chain's genesis (standard 5.6, 7.2)."
+description = "What a tenant's people run against the Sheaf gateway: stage a mandate change, and approve one (standard 5.6, 7.6)."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [

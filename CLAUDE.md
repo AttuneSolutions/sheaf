@@ -5,7 +5,8 @@ Guidance for Claude Code in this repository.
 ## What this is
 
 Sheaf: the evidence dossier standard (`docs/standard.md`, spec id `sheaf/1`), the write gateway,
-the witness, the admin tool (`sheaf-admin`, a chain's genesis) and the offline verifier. Public, Apache-2.0. The standard is the source of truth;
+the witness, the admin tool (`sheaf-admin`: mandates staged as proposals), the approval page
+(`sheaf-approve`) and the offline verifier. Public, Apache-2.0. The standard is the source of truth;
 when code and standard disagree, fix one of them in the same change.
 
 ## Stack
@@ -26,7 +27,8 @@ uv add --package sheaf-core <dep>              # add a dependency to one package
 
 - **`sheaf-core` has no Azure, network or I/O dependencies.** The verifier uses it and promises to
   run offline on a downloaded copy of a container, with nothing from Microsoft beyond reading Blob.
-  Azure SDKs belong in `gateway`, `witness` and `admin` only.
+  Azure SDKs belong in `gateway`, `witness` and `admin` only. `approve` has none either: it acts
+  only with the approver's own token, relayed to the gateway.
 - **One implementation of the hash rules.** The gateway and the verifier both call
   `sheaf_core.canonical` and `sheaf_core.digest`. Never canonicalise or hash an entry anywhere
   else: a second implementation is how a writer and its checker drift apart.

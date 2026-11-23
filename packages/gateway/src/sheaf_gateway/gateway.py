@@ -12,6 +12,11 @@
 
 Receipts for idempotency keys are kept in `gateway-state` beside the journal, not in memory, so a
 retry that arrives after a restart gets the first receipt rather than committing a second entry.
+
+A mandate change is staged first, as a proposal (7.6), checked as its commit would be; its
+`config.changed` is then accepted only as the approval of that pending proposal. Proposals are
+the gateway's own state, like the journal, never the record. Status (7.7) reports how each chain
+stands without a word of its content.
 """
 
 from __future__ import annotations
@@ -25,18 +30,22 @@ import threading
 import time
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as midnight
 from typing import Any
 
 from sheaf_core import paths
 from sheaf_core.artefact import ArtefactInfo, check_artefact
 from sheaf_core.canonical import InvalidJSON, canonicalize, strict_loads
 from sheaf_core.chain import entry_line, link_entry, segment_line
+from sheaf_core.digest import is_artefact_digest
 from sheaf_core.entry import WITNESS_TYPES, check_caller, check_draft
 from sheaf_core.kinds import kind as registered_kind
-from sheaf_core.mandate import granted_types, permits
+from sheaf_core.mandate import SCHEMA_ID as MANDATE_SCHEMA
+from sheaf_core.mandate import changed_parts, check_mandate, granted_types, part_digests, permits
 from sheaf_core.problems import Problem
-from sheaf_core.rules import ChainState
+from sheaf_core.proposal import STAND_IN_APPROVER, STATUSES, approval_draft
+from sheaf_core.rules import ChainState, Mandate, WitnessSeen
 from sheaf_core.times import add_period, format_timestamp, parse_date, parse_timestamp
 from sheaf_core.trust import check_trust_file
 from sheaf_core.witness import check_attestation
@@ -57,8 +66,32 @@ MAX_AUTHORITIES = 16
 MAX_TOKEN_BYTES = 64 * 1024
 MAX_WITNESS_BYTES = MAX_AUTHORITIES * 2 * MAX_TOKEN_BYTES + 64 * 1024
 MANDATE_PART_KINDS = frozenset({"data.json", "text.markdown", "schema.json"})
-"""What a mandate is made of (5.6). Whoever may write `config.changed` may upload these, so a
+"""What a mandate is made of (5.6). Whoever may stage a mandate change may upload these, so a
 new mandate can be uploaded whatever the policy it replaces allows."""
+
+PROPOSER_ROLE = "proposer"
+"""The app role that may stage a mandate change, withdraw it, and read proposals (7.6)."""
+STATUS_ROLE = "status"
+"""The app role that may read `GET /v1/status`, and nothing else (7.7)."""
+PROPOSAL_DAYS = 14
+"""How long a proposal waits for its approver, unless it says otherwise."""
+MAX_PROPOSAL_DAYS = 90
+MAX_PROPOSAL_BYTES = 16 * 1024
+MAX_REASON = 4096
+"""As `reason` in `config.changed`."""
+REFUSAL_CODES = (
+    "proposal_not_pending",
+    "not_a_person",
+    "not_bootstrap",
+    "mandate_pending",
+    "not_an_approver",
+    "four_eyes",
+)
+"""Why `GET /v1/proposals/{sha256}` says the caller may not approve, as codes a client can
+explain without reading the sentence beside them."""
+DAILY_GRACE = timedelta(hours=8)
+"""How long after its day ends a daily witness is overdue: the witness job starts shortly after
+midnight UTC and keeps asking unanswered authorities for six hours (7.2)."""
 
 
 @dataclass(frozen=True)
@@ -109,6 +142,8 @@ class Gateway:
     """How long a request waits for its chain to start before it is refused with 503."""
     RETRY_AFTER = 5
     """The seconds a caller refused while the chain starts is told to wait."""
+    STATUS_WAIT = 2.0
+    """How long a status report waits for a write in progress before reading without it."""
 
     def __init__(
         self,
@@ -139,6 +174,10 @@ class Gateway:
         self._lock = threading.Lock()
         self._halted: str | None = None
         """Why the gateway stopped committing, after a write failed partway."""
+        self._halt_code: str | None = None
+        """`_halted` as a code, for status: it never carries a dossier's or a subject's id."""
+        self._started_info: dict[str, Any] | None = None
+        """When the chain last started and how long its rebuild took, for status."""
         self._started = threading.Event()
         self._started.set()
         """Cleared while the chain starts in the background (`Gateways.start`)."""
@@ -166,12 +205,17 @@ class Gateway:
                     return
                 self._leased = True
         with self._lock:
+            began = time.monotonic()
             try:
                 self._rebuild()
             except _Stopping:
                 self._give_up()
                 return
             self._recovered = True
+            self._started_info = {
+                "at": format_timestamp(datetime.now(UTC)),
+                "seconds": round(time.monotonic() - began, 3),
+            }
 
     def _give_up(self) -> None:
         """The gateway is stopping before the chain started: refuse everything from now on,
@@ -179,7 +223,10 @@ class Gateway:
         holds the lock."""
         self.state = ChainState(self.settings.chain)
         if self._halted is None:
-            self._halted = "the gateway is stopping"
+            self._halt("stopping", "the gateway is stopping")
+
+    def _halt(self, code: str, reason: str) -> None:
+        self._halted, self._halt_code = reason, code
 
     def _rebuild(self) -> None:
         """Replay the container into a fresh chain state, then finish from the journal. The
@@ -208,6 +255,7 @@ class Gateway:
             log.warning("finishing seq %s from the journal", entry["seq"])
             self._write(entry, files)
             self._keep_receipt(record.get("receipt"), entry)
+            self._mark_approved(record.get("proposal"), entry)
         elif head and entry["seq"] == head[0]:
             # Its segment record was written, so the replay holds it, but its witness files
             # or retention may not have been: write them again, without applying it twice.
@@ -216,6 +264,7 @@ class Gateway:
             log.warning("finishing seq %s from the journal", entry["seq"])
             self._write(entry, files, apply=False)
             self._keep_receipt(record.get("receipt"), entry)
+            self._mark_approved(record.get("proposal"), entry)
         elif entry["seq"] > (head[0] + 1 if head else 1):
             raise ChainCorrupt(f"the journal holds seq {entry['seq']}, past the head")
         self._own.clear_journal()
@@ -227,7 +276,7 @@ class Gateway:
         self._stopping.set()
         with self._lock:
             if self._halted is None:
-                self._halted = "the gateway is stopping"
+                self._halt("stopping", "the gateway is stopping")
             if self._leased:
                 self._leased = False
                 self._own.release()
@@ -246,12 +295,11 @@ class Gateway:
         if registered is None:
             raise _reject(422, "kind_unknown", "kind", f"{kind} is not registered")
         mandate = self.state.in_force
-        if kind in MANDATE_PART_KINDS and self._may_write(caller, roles, "config.changed"):
+        if kind in MANDATE_PART_KINDS and self._may_stage(caller, roles):
             return registered["max_bytes"]
         if mandate is None:
-            raise _reject(
-                403, "mandate_not_in_force", "kind", "until genesis, only the mandate is uploaded"
-            )
+            detail = "until genesis, only a mandate's parts are uploaded"
+            raise _reject(403, "mandate_not_in_force", "kind", detail)
         if not any(granted_types(mandate.document, caller, role) for role in (None, *roles)):
             raise _reject(403, "caller_unknown", "$", f"{caller} is not in the policy")
         limits = mandate.document["policy"]["kinds"].get(kind)
@@ -406,6 +454,9 @@ class Gateway:
                 raise Rejected(403, problems)
             self._check_permitted(caller, draft)
             now = self.clock()
+            approves = None
+            if draft["type"] == "config.changed":
+                approves = self._approving(draft, now)
             problems = self.state.check(draft, artefacts=self.store, now=now)
             if problems:
                 raise Rejected(422, problems)
@@ -429,7 +480,7 @@ class Gateway:
                 files = self._witness_files(draft["body"], tokens)
 
             remember = None if name is None else {"name": name, "request": request}
-            entry = self._chain(draft, now, files, remember)
+            entry = self._chain(draft, now, files, remember, approves)
             receipt = _entry_receipt(entry)
 
         event = {
@@ -503,10 +554,10 @@ class Gateway:
         self, caller: str, path: str, data: bytes, *, roles: Collection[str] = ()
     ) -> bool:
         """Store a witness key or a pinned authority certificate in `trust/`, once, before the
-        mandate naming it is committed. Whoever may write `config.changed` may store these."""
+        mandate naming it is committed. Whoever may stage a mandate change may store these."""
         self._check_running()
-        if not self._may_write(caller, roles, "config.changed"):
-            raise _reject(403, "caller_unknown", "$", f"{caller} may not change the mandate")
+        if not self._may_stage(caller, roles):
+            raise _reject(403, "caller_unknown", "$", f"{caller} may not stage a mandate change")
         problems = check_trust_file(path, data)
         if problems:
             raise Rejected(422, problems)
@@ -518,6 +569,402 @@ class Gateway:
                 raise _reject(
                     409, "trust_conflict", "path", "another file is stored there"
                 ) from error
+
+    # -- 7.6 proposals ---------------------------------------------------------------------------
+
+    def _may_stage(self, caller: str, roles: Collection[str]) -> bool:
+        """Whether `caller` may stage a mandate change, upload its parts and trust files, and
+        read proposals: a proposer, or anyone who may change the mandate, which until the
+        genesis mandate is in force is the bootstrap caller."""
+        return (
+            PROPOSER_ROLE in roles
+            or self._may_write(caller, roles, "config.changed")
+            or (self.state.in_force is None and caller == self._bootstrap)
+        )
+
+    def propose(
+        self,
+        caller: str,
+        request: Any,
+        *,
+        roles: Collection[str] = (),
+        person: bool | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Stage a mandate change: `{chain, mandate, reason, expires_in_days?}`, its parts and
+        trust files already uploaded. It is checked against the chain as its `config.changed`
+        would be, with a stand-in approver, and kept as a proposal. Returns the proposal, and
+        whether it is new: staging the same one again returns it."""
+        self._check_running()
+        fields = _proposal_request(request)
+        if fields["chain"] != self.settings.chain:
+            detail = f"this gateway's chain here is {self.settings.chain}"
+            raise _reject(422, "chain_unknown", "$.chain", detail)
+        if not self._may_stage(caller, roles):
+            raise _reject(403, "caller_unknown", "$", f"{caller} may not propose a mandate change")
+        sha256 = fields["mandate"]
+        with self._lock:
+            if self._halted is not None:
+                raise _reject(503, "gateway_halted", "$", self._halted)
+            now = self.clock()
+            doc = self._proposed_mandate(sha256)
+            current = self.state.in_force
+            manifest = {
+                "chain": self.settings.chain,
+                "mandate": sha256,
+                "version": doc["version"],
+                "previous": None
+                if current is None
+                else {
+                    "version": current.version,
+                    "config": current.config,
+                    "mandate": current.mandate,
+                },
+                "changed": changed_parts(None if current is None else current.document, doc),
+                "parts": part_digests(doc),
+                "artefacts": self._mandate_refs(sha256, doc),
+                "proposed_by": {"kind": "person" if person else "system", "id": caller},
+                "proposed_at": format_timestamp(now),
+                "reason": fields["reason"],
+                "expires_at": format_timestamp(now + timedelta(days=fields["expires_in_days"])),
+                "status": "pending",
+            }
+            draft = approval_draft(manifest, approver=STAND_IN_APPROVER, observed_at=now)
+            problems = self.state.check(draft, artefacts=self.store, now=now)
+            if problems:
+                raise Rejected(422, problems)
+            earlier = self._proposal(sha256)
+            if earlier is not None:
+                status = self._status(earlier, now)
+                same = (earlier["proposed_by"], earlier["reason"]) == (
+                    manifest["proposed_by"],
+                    manifest["reason"],
+                )
+                if status == "pending" and same:
+                    return self._view(earlier, now), False
+                # One approved in the past may be staged again, to return to it; not one that
+                # is still the latest mandate change.
+                latest = {m.mandate for m in (self.state.pending, self.state.in_force) if m}
+                if status == "pending" or (status == "approved" and sha256 in latest):
+                    detail = f"this mandate is already proposed, and {status}"
+                    raise _reject(409, "proposal_exists", "$.mandate", detail)
+            self._keep_proposal(manifest)
+        log.info("%s: proposal %s staged by %s", self.settings.chain, sha256, caller)
+        return self._view(manifest, now), True
+
+    def proposals(
+        self, caller: str, *, roles: Collection[str] = (), status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """This chain's proposals, each with its status now, optionally only those `status`."""
+        self._check_running()
+        if not self._may_stage(caller, roles):
+            raise _reject(403, "caller_unknown", "$", f"{caller} may not read proposals")
+        now = self.clock()
+        views = [self._view(json.loads(data), now) for data in self._stored_proposals()]
+        return [view for view in views if status is None or view["status"] == status]
+
+    def proposal(
+        self,
+        caller: str,
+        sha256: str,
+        *,
+        roles: Collection[str] = (),
+        person: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """A proposal, the mandate it proposes and the one it would replace, and whether
+        `caller` may approve it; or None if this chain has no such proposal."""
+        self._check_running()
+        if not self._may_stage(caller, roles):
+            raise _reject(403, "caller_unknown", "$", f"{caller} may not read proposals")
+        manifest = self._proposal(sha256)
+        if manifest is None:
+            return None
+        view = self._view(manifest, self.clock())
+        doc = self.store.json(sha256)
+        previous = manifest["previous"]
+        return {
+            "proposal": view,
+            "mandate": doc,
+            "previous_mandate": None if previous is None else self.store.json(previous["mandate"]),
+            "caller": self._approval(caller, roles, person, view, doc),
+        }
+
+    def withdraw(
+        self,
+        caller: str,
+        sha256: str,
+        *,
+        roles: Collection[str] = (),
+        person: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """Withdraw a pending proposal: its proposer, or anyone who may approve it. None if this
+        chain has no such proposal."""
+        self._check_running()
+        if not self._may_stage(caller, roles):
+            raise _reject(403, "caller_unknown", "$", f"{caller} may not read proposals")
+        with self._lock:
+            manifest = self._proposal(sha256)
+            if manifest is None:
+                return None
+            now = self.clock()
+            status = self._status(manifest, now)
+            if status != "pending":
+                raise _reject(409, "proposal_not_pending", "$", f"the proposal is {status}")
+            mine = manifest["proposed_by"]["id"] == caller
+            if not (mine or self._may_write(caller, roles, "config.changed")):
+                detail = "a proposal is withdrawn by its proposer or by an approver"
+                raise _reject(403, "caller_unknown", "$", detail)
+            manifest = {
+                **manifest,
+                "status": "withdrawn",
+                "withdrawn_by": {"kind": "person" if person else "system", "id": caller},
+                "withdrawn_at": format_timestamp(now),
+            }
+            self._keep_proposal(manifest)
+        log.info("%s: proposal %s withdrawn by %s", self.settings.chain, sha256, caller)
+        return self._view(manifest, now)
+
+    def _proposed_mandate(self, sha256: str) -> dict[str, Any]:
+        """The mandate a proposal names, uploaded and valid. Raises Rejected otherwise."""
+        info = self.store.info(sha256)
+        if info is None:
+            raise _reject(422, "artefact_unknown", "$.mandate", "upload the mandate first")
+        if info.kind != "data.json" or info.declared_schema != MANDATE_SCHEMA:
+            detail = f"a mandate is a data.json declaring {MANDATE_SCHEMA}"
+            raise _reject(422, "mandate_schema", "$.mandate", detail)
+        doc = self.store.json(sha256)
+        problems = check_mandate(doc, "$.mandate")
+        if problems:
+            raise Rejected(422, problems)
+        if doc["chain"] != self.settings.chain:
+            raise _reject(422, "mandate_chain", "$.mandate", f"the mandate is for {doc['chain']}")
+        if doc["personal_data"]["identifiers"] != self.settings.identifiers:
+            detail = f"this gateway records identifiers {self.settings.identifiers}"
+            raise _reject(422, "identifiers_mismatch", "$.mandate", detail)
+        return doc
+
+    def _mandate_refs(self, sha256: str, doc: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The artefact references a mandate's `config.changed` attaches (5.6): the mandate,
+        then its instructions, then its schemas, as uploaded."""
+        named = [("mandate", sha256)]
+        named += [("instructions", item["sha256"]) for item in doc["instructions"]]
+        named += [("schema", item["sha256"]) for item in doc["schemas"]]
+        refs, problems = [], []
+        for role, digest in dict.fromkeys(named):
+            info = self.store.info(digest)
+            if info is None:
+                problems.append(
+                    Problem("artefact_unknown", f"$.{role}", f"{digest} is not uploaded")
+                )
+                continue
+            refs.append({"role": role, **_receipt(info)})
+        if problems:
+            raise Rejected(422, problems)
+        return refs
+
+    def _approving(self, draft: Mapping[str, Any], now: datetime) -> str:
+        """The proposal a `config.changed` approves: pending, and exactly what its approval is.
+        Raises Rejected otherwise. The caller holds the lock."""
+        sha256 = draft["body"]["mandate"]
+        manifest = self._proposal(sha256)
+        if manifest is None:
+            detail = "a mandate change is committed only as the approval of a staged proposal"
+            raise _reject(403, "proposal_required", "$.body.mandate", detail)
+        status = self._status(manifest, now)
+        if status != "pending":
+            raise _reject(
+                409, "proposal_not_pending", "$.body.mandate", f"the proposal is {status}"
+            )
+        expected = approval_draft(
+            manifest,
+            approver=draft["actor"]["id"],
+            role=draft["actor"].get("role"),
+            observed_at=now,
+        )
+        differ = [k for k in sorted(set(draft) | set(expected)) if draft.get(k) != expected.get(k)]
+        differ = [k for k in differ if k not in ("observed_at", "body")]
+        body, wanted = draft["body"], expected["body"]
+        differ += [
+            f"body.{k}" for k in sorted(set(body) | set(wanted)) if body.get(k) != wanted.get(k)
+        ]
+        if differ:
+            detail = f"not the proposal's approval: it differs in {', '.join(differ)}"
+            raise _reject(422, "proposal_mismatch", "$", detail)
+        return sha256
+
+    def _approval(
+        self,
+        caller: str,
+        roles: Collection[str],
+        person: bool | None,
+        view: Mapping[str, Any],
+        doc: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Whether `caller` may approve the proposal now, and under which role; or why not."""
+        found: dict[str, Any] = {
+            "id": caller,
+            "may_approve": False,
+            "role": None,
+            "refusal": None,
+            "refusal_code": None,
+        }
+
+        def refuse(code: str, detail: str) -> None:
+            found.update(refusal=detail, refusal_code=code)
+
+        role = None
+        if view["status"] != "pending":
+            refuse("proposal_not_pending", f"the proposal is {view['status']}")
+        elif person is False:
+            refuse("not_a_person", "an approver signs in as a person, with their own account")
+        elif self.state.head is None:
+            governing = doc
+            if caller != self._bootstrap:
+                refuse("not_bootstrap", "only the gateway's bootstrap caller approves a genesis")
+        elif (mandate := self.state.governing()) is None:
+            refuse("mandate_pending", "the last mandate change is waiting for its interim witness")
+        else:
+            governing = mandate.document
+            if "config.changed" not in (granted_types(governing, caller) or ()):
+                role = next(
+                    (
+                        r
+                        for r in sorted(roles)
+                        if "config.changed" in (granted_types(governing, None, r) or ())
+                    ),
+                    None,
+                )
+                if role is None:
+                    refuse("not_an_approver", "the mandate in force does not let you change it")
+        if found["refusal"] is None:
+            if governing["policy"]["four_eyes"] and view["proposed_by"]["id"] == caller:
+                refuse(
+                    "four_eyes",
+                    "you proposed this change, and the mandate asks for four eyes: "
+                    "someone else approves it",
+                )
+            else:
+                found.update(may_approve=True, role=role)
+        return found
+
+    def _status(self, manifest: Mapping[str, Any], now: datetime) -> str:
+        """A proposal's status now (`sheaf_core.proposal.STATUSES`)."""
+        if manifest["status"] in ("approved", "withdrawn"):
+            return manifest["status"]
+        state = self.state
+        if any(
+            m is not None and m.mandate == manifest["mandate"]
+            for m in (state.pending, state.in_force)
+        ):
+            return "approved"
+        if now >= parse_timestamp(manifest["expires_at"]):
+            return "expired"
+        latest = state.pending or state.in_force
+        previous = manifest["previous"]
+        if (latest and latest.config) != (previous and previous["config"]):
+            return "superseded"
+        return "pending"
+
+    def _view(self, manifest: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+        return {**manifest, "status": self._status(manifest, now)}
+
+    def _mark_approved(self, sha256: str | None, entry: Mapping[str, Any]) -> None:
+        """Note on the proposal a `config.changed` approved which entry approved it. Part of the
+        entry's journalled writes."""
+        if sha256 is None:
+            return
+        manifest = self._proposal(sha256)
+        if manifest is None or manifest.get("approved", {}).get("hash") == entry["hash"]:
+            return
+        approved = {
+            "seq": entry["seq"],
+            "hash": entry["hash"],
+            "committed_at": entry["committed_at"],
+            "by": entry["body"]["approved_by"],
+        }
+        self._keep_proposal({**manifest, "status": "approved", "approved": approved})
+
+    def _proposal(self, sha256: str) -> dict[str, Any] | None:
+        try:
+            data = self._own.read_proposal(sha256)
+        except Exception as error:
+            log.exception("a proposal could not be read")
+            raise _reject(503, "state_unavailable", "$", "the proposals cannot be read") from error
+        return None if data is None else json.loads(data)
+
+    def _stored_proposals(self) -> list[bytes]:
+        try:
+            return self._own.list_proposals()
+        except Exception as error:
+            log.exception("the proposals could not be listed")
+            raise _reject(503, "state_unavailable", "$", "the proposals cannot be read") from error
+
+    def _keep_proposal(self, manifest: Mapping[str, Any]) -> None:
+        try:
+            self._own.write_proposal(manifest["mandate"], json.dumps(manifest).encode())
+        except Exception as error:
+            log.exception("a proposal could not be kept")
+            raise _reject(503, "state_unavailable", "$", "the proposal was not kept") from error
+
+    # -- 7.7 status ------------------------------------------------------------------------------
+
+    def status(self) -> dict[str, Any]:
+        """How this chain stands: counts, sequence numbers, times, fingerprints, versions and
+        codes, never an entry's content nor a dossier's or a subject's identifier."""
+        state = "running" if self.running else "starting"
+        if self._halted is not None:
+            state = "halted"
+        report: dict[str, Any] = {
+            "chain": self.settings.chain,
+            "state": state,
+            "halted": None if self._halt_code is None else {"code": self._halt_code},
+            "started": self._started_info,
+            "lease_held": self._leased and self._own.held(),
+            "head": None,
+            "mandate": None,
+            "witness": None,
+        }
+        if state != "running":
+            return report
+        now = self.clock()
+        # A snapshot between commits, so the head, its time and the witnesses agree; waiting a
+        # little at most, since a status reader must never hang behind a slow write.
+        locked = self._lock.acquire(timeout=self.STATUS_WAIT)
+        try:
+            chain = self.state
+            head, head_at = chain.head, chain.head_at
+            in_force, pending_mandate = chain.in_force, chain.pending
+            daily = chain.last_witness("witness.daily")
+            interim = chain.last_witness("witness.interim")
+            start, genesis_at = chain.last_daily_end, chain.genesis_at
+        finally:
+            if locked:
+                self._lock.release()
+        if head is not None:
+            report["head"] = {"seq": head[0], "committed_at": format_timestamp(head_at)}
+        try:
+            pending = sum(
+                1
+                for data in self._own.list_proposals()
+                if self._status(json.loads(data), now) == "pending"
+            )
+        except Exception:
+            log.exception("the proposals could not be counted")
+            pending = None
+        report["mandate"] = {
+            "in_force": _mandate_status(in_force),
+            "pending": _mandate_status(pending_mandate),
+            "proposals_pending": pending,
+        }
+        if start is None and genesis_at is not None:
+            start = datetime.combine(genesis_at.date(), midnight(0), UTC)
+        due = None if start is None else start + timedelta(days=1) + DAILY_GRACE
+        report["witness"] = {
+            "daily": _witness_status(daily),
+            "interim": _witness_status(interim),
+            "daily_due_by": None if due is None else format_timestamp(due),
+            "daily_overdue": due is not None and now > due,
+        }
+        return report
 
     def _check_running(self) -> None:
         """A chain serves nothing until it has started: a request waits a little for it, and is
@@ -575,11 +1022,15 @@ class Gateway:
         now: datetime,
         files: dict[str, tuple[bytes, str]],
         remember: dict[str, str] | None = None,
+        approves: str | None = None,
     ) -> dict[str, Any]:
-        """Link the entry to the head, journal it, write it, and keep its receipt for the
-        idempotency key in `remember`. The caller holds the lock."""
+        """Link the entry to the head, journal it, write it, keep its receipt for the
+        idempotency key in `remember`, and mark the proposal it `approves` approved. The caller
+        holds the lock."""
         if not self._own.held():
-            self._halted = "the chain-head lease was lost; another gateway may be writing"
+            self._halt(
+                "lease_lost", "the chain-head lease was lost; another gateway may be writing"
+            )
             raise _reject(503, "lease_lost", "$", self._halted)
         head = self.state.head
         entry = link_entry(
@@ -596,6 +1047,7 @@ class Gateway:
                     for path, (data, media_type) in files.items()
                 },
                 "receipt": remember,
+                "proposal": approves,
             }
         ).encode()
         # A write that fails partway stops the gateway: committing again would reuse this seq
@@ -604,9 +1056,12 @@ class Gateway:
             self._own.write_journal(journal)
             self._write(entry, files)
             self._keep_receipt(remember, entry)
+            self._mark_approved(approves, entry)
             self._own.clear_journal()
         except Exception as error:
-            self._halted = f"a write failed at seq {entry['seq']}; restart to finish it"
+            self._halt(
+                "write_failed", f"a write failed at seq {entry['seq']}; restart to finish it"
+            )
             log.exception("halted: write failed at seq %s", entry["seq"])
             raise _reject(503, "write_failed", "$", self._halted) from error
         return entry
@@ -705,6 +1160,7 @@ class Gateways:
             raise ValueError("a gateway serves at least one chain")
         if len({gateway.settings.tenant for gateway in self._by_chain.values()}) != 1:
             raise ValueError("a gateway serves one tenant's chains")
+        self._started_at = format_timestamp(datetime.now(UTC))
 
     @property
     def chains(self) -> tuple[str, ...]:
@@ -835,9 +1291,122 @@ class Gateways:
         mandate may store them. Each is written once and pinned by its SHA-256 in the mandate
         that names it, so a wrong file is never trusted: the mandate naming it is refused."""
         running = [g for g in self._by_chain.values() if g.running]
-        permitted = [g for g in running if g._may_write(caller, roles, "config.changed")]
+        permitted = [g for g in running if g._may_stage(caller, roles)]
         chosen = (permitted or running or list(self._by_chain.values()))[0]
         return chosen.put_trust(caller, path, data, roles=roles)
+
+    # -- 7.6 proposals, across the tenant's chains -----------------------------------------------
+
+    def propose(
+        self, caller: str, raw: bytes, *, roles: Collection[str] = (), person: bool | None = None
+    ) -> tuple[dict[str, Any], bool]:
+        request = _parse(raw)
+        gateway = self._for(request.get("chain") if isinstance(request, dict) else None)
+        return gateway.propose(caller, request, roles=roles, person=person)
+
+    def proposals(
+        self,
+        caller: str,
+        *,
+        chain: str | None = None,
+        status: str | None = None,
+        roles: Collection[str] = (),
+    ) -> list[dict[str, Any]]:
+        """The proposals of every running chain the caller may read, or of `chain` alone. Which
+        chains could not be read is `unavailable()`."""
+        if status is not None and status not in STATUSES:
+            detail = f"a status is one of {', '.join(STATUSES)}"
+            raise _reject(422, "proposal_invalid", "status", detail)
+        chosen = [self.chain(chain)] if chain is not None else self._running()
+        found, readable, refused = [], 0, None
+        for gateway in chosen:
+            try:
+                found += gateway.proposals(caller, roles=roles, status=status)
+                readable += 1
+            except Rejected as error:
+                if error.status != 403:
+                    raise
+                refused = error
+        if not readable and refused is not None:
+            raise refused
+        return found
+
+    def proposal(
+        self, caller: str, sha256: str, *, roles: Collection[str] = (), person: bool | None = None
+    ) -> dict[str, Any]:
+        _check_digest(sha256)
+        refused = None
+        for gateway in self._running():
+            try:
+                found = gateway.proposal(caller, sha256, roles=roles, person=person)
+            except Rejected as error:
+                if error.status != 403:
+                    raise
+                refused = error
+                continue
+            if found is not None:
+                return found
+        self._check_all_running()
+        readable = [g for g in self._running() if g._may_stage(caller, roles)]
+        if not readable and refused is not None:
+            raise refused
+        raise _reject(404, "proposal_unknown", "$", "no chain this gateway serves has it")
+
+    def withdraw(
+        self, caller: str, sha256: str, *, roles: Collection[str] = (), person: bool | None = None
+    ) -> dict[str, Any]:
+        _check_digest(sha256)
+        readable = [g for g in self._running() if g._may_stage(caller, roles)]
+        for gateway in readable:
+            found = gateway.withdraw(caller, sha256, roles=roles, person=person)
+            if found is not None:
+                return found
+        self._check_all_running()
+        if not readable:
+            raise _reject(403, "caller_unknown", "$", f"{caller} may not read proposals")
+        raise _reject(404, "proposal_unknown", "$", "no chain this gateway serves has it")
+
+    def _running(self) -> list[Gateway]:
+        return [g for g in self._by_chain.values() if g.running]
+
+    def unavailable(self) -> list[str]:
+        """The chains not serving now: still starting, or halted."""
+        return [chain for chain, g in self._by_chain.items() if not g.running]
+
+    def _check_all_running(self) -> None:
+        """Before saying a proposal is not there: refuse with 503, as the chain itself would,
+        while a chain that may hold it is starting or halted, so a proposal on it is never
+        reported unknown."""
+        stopped = [g for g in self._by_chain.values() if not g.running]
+        if any(g._halted is None for g in stopped):
+            detail = "a chain that may hold it is starting"
+            raise Rejected(
+                503,
+                [Problem("gateway_starting", "$", detail)],
+                {"Retry-After": str(Gateway.RETRY_AFTER)},
+            )
+        if stopped:
+            raise _reject(503, "gateway_halted", "$", "a chain that may hold it is halted")
+
+    # -- 7.7 status --------------------------------------------------------------------------------
+
+    def status(self, caller: str, *, roles: Collection[str] = ()) -> dict[str, Any]:
+        """How each chain stands, for the `status` role, a proposer, or anyone who may change a
+        running chain's mandate."""
+        # Roles first: status matters most when no chain is running to say who may change it.
+        may = (
+            STATUS_ROLE in roles
+            or PROPOSER_ROLE in roles
+            or any(g._may_stage(caller, roles) for g in self._running())
+        )
+        if not may:
+            raise _reject(403, "caller_unknown", "$", "reading status needs the status role")
+        store = next(iter(self._by_chain.values())).store
+        return {
+            "gateway": {"started_at": self._started_at},
+            "storage": {"immutability": getattr(store, "immutability", None)},
+            "chains": [gateway.status() for gateway in self._by_chain.values()],
+        }
 
     def subject_pseudonym(
         self, caller: str, subject: Any, *, roles: Collection[str] = ()
@@ -862,7 +1431,7 @@ class _Stopping(Exception):
 
 def _halt(chain: str, gateway: Gateway, error: ChainCorrupt) -> None:
     log.critical("halted %s: the stored chain does not add up: %s", chain, error)
-    gateway._halted = f"the stored chain does not add up: {error}"
+    gateway._halt("chain_corrupt", f"the stored chain does not add up: {error}")
 
 
 def _trust_paths(mandate: dict[str, Any]) -> list[str]:
@@ -886,4 +1455,60 @@ def _receipt(info: ArtefactInfo) -> dict[str, Any]:
         "media_type": info.media_type,
         "bytes": info.bytes,
         "sensitivity": info.sensitivity,
+    }
+
+
+def _proposal_request(request: Any) -> dict[str, Any]:
+    """A proposal as staged: `{chain, mandate, reason, expires_in_days?}`."""
+    required, allowed = (
+        {"chain", "mandate", "reason"},
+        {"chain", "mandate", "reason", "expires_in_days"},
+    )
+    if not isinstance(request, dict) or not required <= set(request) or set(request) - allowed:
+        detail = "a proposal is {chain, mandate, reason}, and optionally expires_in_days"
+        raise _reject(422, "proposal_invalid", "$", detail)
+    if not is_artefact_digest(request["mandate"]):
+        raise _reject(422, "proposal_invalid", "$.mandate", "the mandate's SHA-256, 64 hex digits")
+    reason = request["reason"]
+    if not isinstance(reason, str) or not 0 < len(reason) <= MAX_REASON:
+        raise _reject(422, "proposal_invalid", "$.reason", f"a sentence, at most {MAX_REASON} long")
+    days = request.get("expires_in_days", PROPOSAL_DAYS)
+    if type(days) is not int or not 1 <= days <= MAX_PROPOSAL_DAYS:
+        detail = f"whole days, from 1 to {MAX_PROPOSAL_DAYS}"
+        raise _reject(422, "proposal_invalid", "$.expires_in_days", detail)
+    return {
+        "chain": request["chain"],
+        "mandate": request["mandate"],
+        "reason": reason,
+        "expires_in_days": days,
+    }
+
+
+def _check_digest(sha256: str) -> None:
+    if not is_artefact_digest(sha256):
+        raise _reject(422, "sha256_format", "sha256", "64 lower-case hex digits")
+
+
+def _mandate_status(mandate: Mandate | None) -> dict[str, Any] | None:
+    if mandate is None:
+        return None
+    return {
+        "version": mandate.version,
+        "fingerprint": mandate.mandate,
+        "config": mandate.config,
+        "seq": mandate.seq,
+        "committed_at": mandate.committed_at,
+        "approved_by": mandate.approved_by,
+    }
+
+
+def _witness_status(seen: WitnessSeen | None) -> dict[str, Any] | None:
+    if seen is None:
+        return None
+    return {
+        "seq": seen.seq,
+        "committed_at": seen.committed_at,
+        "last_seq": seen.last_seq,
+        "interval_to": seen.interval_to,
+        "attested": list(seen.attested),
     }

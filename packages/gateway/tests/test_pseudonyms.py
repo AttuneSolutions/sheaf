@@ -11,6 +11,7 @@ from sheaf_gateway.pseudonyms import MemoryPseudonyms, RecordedIdentities
 from sheaf_gateway.store import MemoryStore
 
 APPROVER_OID = "00000000-0000-4000-8000-0000000000a1"
+PROPOSER_OID = "00000000-0000-4000-8000-0000000000b2"
 AGENT_OID = "00000000-0000-4000-8000-0000000000a2"
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:+/=-]*$")
 
@@ -58,7 +59,8 @@ def pseudonymised_world():
         oid = request.headers.get("X-Test-Oid")
         if not oid:
             return None
-        return Caller(oid, person=request.headers.get("X-Test-Person") == "yes")
+        roles = frozenset(r for r in request.headers.get("X-Test-Roles", "").split(",") if r)
+        return Caller(oid, roles, person=request.headers.get("X-Test-Person") == "yes")
 
     client = TestClient(create_app(gateway, authenticate=RecordedIdentities(header, pseudonyms)))
     return gateway, client, pseudonyms
@@ -94,10 +96,18 @@ def upload_genesis(gateway, caller, doc):
         )
     for path, data in t.trust_files(doc).items():
         gateway.put_trust(caller, path, data)
+    if doc["personal_data"]["identifiers"] == "pseudonymised":
+        sha256 = t.artefact_sha256(t.mandate_bytes(doc))
+        request = {"chain": doc["chain"], "mandate": sha256, "reason": "genesis"}
+        gateway.propose(PROPOSER["id"], request, roles=("proposer",), person=True)
+
+
+PROPOSER = {"kind": "person", "id": "ps-" + "e" * 32}
+"""A proposer's pseudonym, as the gateway names a person under pseudonymised identifiers."""
 
 
 def genesis_as(pseudonym, doc):
-    entry = t.config_changed(doc)
+    entry = t.config_changed(doc, proposed_by=PROPOSER)
     person = {"kind": "person", "id": pseudonym}
     entry["actor"], entry["body"]["approved_by"] = person, person
     return entry
@@ -131,11 +141,12 @@ def test_a_mandate_declares_the_identifiers_the_gateway_records():
     pseudonym = pseudonyms.pseudonym(APPROVER_OID)
     doc = t.mandate_document()  # says "clear"
     upload_genesis(gateway, pseudonym, doc)
+    request = {"chain": t.CHAIN, "mandate": t.artefact_sha256(t.mandate_bytes(doc))}
 
     response = client.post(
-        "/v1/entries",
-        content=t.mandate_bytes(genesis_as(pseudonym, doc)),
-        headers=as_person(APPROVER_OID),
+        "/v1/proposals",
+        json={**request, "reason": "genesis"},
+        headers={**as_person(PROPOSER_OID), "X-Test-Roles": "proposer"},
     )
 
     assert response.status_code == 422

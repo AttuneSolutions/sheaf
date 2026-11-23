@@ -278,7 +278,7 @@ The `time_attestation` block follows these rules:
 | `finding.drafted` | Schema identifier of the findings artefact | The findings artefact declares that schema, which is a tenant schema of the mandate in force (5.6), and validates against it |
 | `output.produced` | Where the output went (e.g. a file location) and its fingerprint | Fingerprint present |
 | `decision.recorded` | Decision from a fixed set (`approve`, `approve_with_edits`, `reject`, `escalate`), reason, edits, the fingerprint of what was decided | Actor must be a person, not a system; the decided fingerprint must exist in this dossier |
-| `config.changed` | What changed (the mandate parts, 5.6), the new version, the old version and the `hash` of its `config.changed`, who approved, and a digest of each mandate part and of the whole | Approver must be the actor, a person (5.1); the **whole** mandate attached as artefacts and complete against schema `sheaf.mandate/1`; the parts named as changed are exactly those whose digest changed; the first entry of every chain (with no old version); one change waits at a time; applied only after its `witness.interim` (5.6) |
+| `config.changed` | What changed (the mandate parts, 5.6), the new version, the old version and the `hash` of its `config.changed`, who proposed it and who approved it, and a digest of each mandate part and of the whole | Approver must be the actor, a person (5.1); the approval of a pending proposal (7.6); under the mandate's four-eyes rule, the proposer is not the approver (the mandate in force decides, or the genesis mandate for itself); the **whole** mandate attached as artefacts and complete against schema `sheaf.mandate/1`; the parts named as changed are exactly those whose digest changed; the first entry of every chain (with no old version); one change waits at a time; applied only after its `witness.interim` (5.6) |
 | `correction` | The entry it corrects and why | Target entry exists in a dossier; never edits, only supersedes. In another dossier only if the target's dossier is sealed and has the same subject |
 | `notice` | Failure, retry, pause, resume, restart, an authority that did not answer | In a dossier, or at chain level when it concerns no unit of work |
 | `dossier.sealed` | Final status (`completed`, `failed`, `abandoned`), the number of entries in the dossier including this one, and of distinct artefacts it refers to | Last entry; counts are true; the gateway then accepts nothing more for the dossier |
@@ -349,8 +349,10 @@ independently attested.
 
 The **mandate** is everything that fixes what a workflow may do and how it is recorded:
 - the gateway policy file: callers by id and app roles, the entry types each may write, kinds,
-  size limits, source capture, sensitivity rules. A role lets people be added or removed in the
-  tenant's directory without a new mandate;
+  size limits, source capture, the app roles that may open each sensitivity, and whether a
+  mandate change needs four eyes (7.6). A role lets people be added or removed in the tenant's
+  directory without a new mandate. Roles are named by their app role value, as the `roles`
+  claim of an Entra ID token carries it, never by a directory group's name;
 - the instructions and rules as given to the model, verbatim;
 - the tenant's own JSON Schemas, such as the one its findings follow (5.3);
 - the model configuration: provider, region, deployment, model and version, parameters;
@@ -372,8 +374,8 @@ agent permitted to do at entry N" is answered from the container alone: the late
 whose `witness.interim` comes before N, whose artefacts the verifier checks against the digests in
 its body (MIO-STD-01 6.3).
 
-- **Genesis.** The first entry of every chain is a `config.changed` with no old version, approved by a
-  named person.
+- **Genesis.** The first entry of every chain is a `config.changed` with no old version, staged as
+  a proposal and approved by a named person (7.6).
 - **Fixed before it applies.** The gateway applies a new mandate only after its `witness.interim` is
   committed, so every entry under it provably came after it was stamped (MIO-STD-01 6.2, at grade A).
   That interim witness is signed with the new mandate's key and lists its authorities; every other
@@ -428,8 +430,9 @@ not personal data and are recorded in clear.
 A subject is pseudonymised the same way, under a secret of its own per subject record (its system,
 object and id), so erasing a client means destroying the secrets of their records. A caller the
 mandate in force knows gets a subject's pseudonym from `POST /v1/pseudonyms`; the gateway never
-records the clear id. Under a mandate that pseudonymises, every person named as `actor`, every
-`subject.id`, and the person who signed the mandate's authority assessment must be in that form
+records the clear id. Under a mandate that pseudonymises, every person named as `actor` or as the proposer of a
+mandate change, every `subject.id`, and the person who signed the mandate's authority
+assessment must be in that form
 (`ps-` and 32 hexadecimal digits); the gateway refuses anything else, and the verifier checks it
 again.
 
@@ -464,9 +467,9 @@ Size limits per kind are set in the registry. Anything bigger is rejected, not t
 business. Every reader must treat artefact bytes as untrusted, even
 though the gateway validated them.
 
-**Sensitivity** is declared per artefact: `client_pii`, `staff_pii` or `none`. The gateway's link
-issuer (section 8) and readers use it to decide who may open the artefact; it does not change how it
-is stored.
+**Sensitivity** is declared per artefact: `client_pii`, `staff_pii` or `none`. The mandate's
+policy names the app roles that may open each (5.6). The gateway's link issuer (section 8) and
+readers use it to decide who may open the artefact; it does not change how it is stored.
 
 ## 7 The write gateway
 
@@ -487,7 +490,8 @@ is stored.
   tenant's virtual network; the storage account reached through a private endpoint; one replica,
   since a chain has one writer anyway. Its write-ahead journal and the chain-head lease live in a
   separate, mutable `gateway-state` container that only the gateway can write, because a replica's
-  local disk does not survive a restart; so do the receipts it keeps for idempotency keys (7.2).
+  local disk does not survive a restart; so do the receipts it keeps for idempotency keys (7.2)
+  and the proposals staged for each chain's mandate (7.6).
   A gateway replacing another serves a chain only once it holds that chain's lease, and a
   gateway that stops releases its leases. The witness (7.5) runs as a scheduled Container Apps
   job from the same image, with its own identity.
@@ -598,6 +602,70 @@ witness a history of its own making. It separates identities, not organisations:
 subscription can reassign roles, and that shows in the Azure activity log. What stops the operator
 moving a record in time is the two authorities' stamps, not the key.
 
+### 7.6 Mandate changes: proposals and approval
+
+A mandate change is made in two steps, so that whoever approves it reads, before they approve,
+exactly what will be committed.
+
+1. **Staging.** A proposer uploads the new mandate's parts (7.2 step 1) and stores the trust
+   files it names (`PUT /v1/trust/{path}`: the witness key at its key ID, each authority's
+   certificate at its SHA-256; each checked as a key or certificate and written once, so another
+   file at the same path is refused), then stages a **proposal**: the mandate's SHA-256, a reason, and how long it waits
+   for an approver (14 days unless it says otherwise, at most 90). A proposer is a person or a
+   workload holding the gateway's `proposer` app role, or anyone who may change the mandate. The
+   gateway checks the proposal against the chain exactly as it will check the `config.changed`
+   that approves it, with a stand-in approver, and refuses one with problems, so nobody is asked
+   to approve a change the gateway would refuse. A proposal is the gateway's own state, kept in
+   `gateway-state`; it is not a record entry, and staging, withdrawing or letting one expire
+   writes nothing to the record.
+2. **Approval.** The approver commits the `config.changed` the proposal describes, with their own
+   credentials (5.1). The gateway accepts a `config.changed` only as the approval of a pending
+   proposal for the same mandate: every field but `observed_at`, and the approver's own identity
+   and role in `actor` and `approved_by`, is what the proposal holds, and `proposed_by` is the proposer the gateway authenticated when it
+   was staged. Before genesis the approver is the gateway's bootstrap caller; after it, whoever
+   the mandate in force lets write `config.changed`. Under the mandate's four-eyes rule
+   (`policy.four_eyes`) the proposer may not approve. The mandate in force decides, or the
+   genesis mandate for itself, so a change cannot switch the rule off for itself. The record
+   names both, and the verifier checks the rule again.
+
+A proposal is `pending` until it is `approved`, `withdrawn` (by its proposer or an approver),
+`expired`, or `superseded`: another mandate change was committed after it was staged, so the
+mandate it would replace is no longer the latest. Only a pending proposal is approved. While a
+change waits for its interim witness, nothing new is staged. A proposal is never reported unknown
+while a chain that may hold it is starting or halted: the gateway answers `503`, as that chain
+would.
+
+**The approval page.** `sheaf-approve`, a small web service in the same image, lets an approver
+approve in their own browser with their own sign-in while the gateway stays inside the tenant's
+network. It shows the proposal in plain language generated from the mandate's fields (never
+written by hand for a tenant), what changes against the mandate in force, and the mandate's
+fingerprint, which binds what was shown to what is signed. The approver types the chain's name,
+and the service submits the approval with the approver's own token, relayed from inside the
+network. It holds no Azure credential, keeps no state, and stores and logs no token.
+`sheaf-admin approve` does the same from a terminal.
+
+| Request | Who | Does |
+|---|---|---|
+| `POST /v1/proposals` | Proposer | Stage `{chain, mandate, reason, expires_in_days}`; the same proposal staged again is returned |
+| `GET /v1/proposals?chain=&status=` | Proposer, approver | List proposals, each with its status now, and name any chain starting or halted, whose proposals were not read |
+| `GET /v1/proposals/{sha256}` | Proposer, approver | A proposal, the mandate it proposes and the one it replaces, and whether the caller may approve it, under which role, or why not |
+| `DELETE /v1/proposals/{sha256}` | Its proposer, an approver | Withdraw it |
+
+### 7.7 Status
+
+`GET /v1/status` reports how each chain stands: running, starting or halted (with a code);
+its head `seq` and time; the mandate in force and any change waiting for its interim witness
+(version, fingerprint, `config` hash, approver); how many proposals are pending; the last daily
+and interim witness (`seq`, time, the authorities that attested) and whether a daily witness is
+overdue, eight hours after its day ends; when the chain last started and how long its rebuild
+took; whether the gateway holds its lease; the immutability mode the gateway was deployed with;
+and the requests refused in the last 24 hours, counted by code.
+
+It holds counts, sequence numbers, times, fingerprints, versions and codes, and nothing else: no
+entry's content, and no dossier, subject or artefact identifier. It is read under a low-privilege
+`status` app role, and by proposers and anyone who may change a mandate. It is the gateway's view
+at the moment of asking, not part of the record, and is versioned with the gateway's API (`/v1`).
+
 ## 8 Reading: the contract on the customer's side
 
 This is the whole interface between the gateway and any reader. A reader gets
@@ -617,7 +685,7 @@ as a prompt to read storage, never as the fact itself, and catches up from the c
 missed.
 
 **Opening evidence.** A reader asks the gateway for a link, naming the viewer. The gateway checks the
-viewer's role against the artefact's sensitivity under the tenant's policy and issues a user
+viewer's app roles against the artefact's sensitivity under the tenant's policy and issues a user
 delegation SAS for that one blob, read-only, for minutes. How the gateway learns the viewer's role,
 from the reader's word or from the viewer's own Entra token, is not fixed by this draft. The gateway logs each
 link it issues in its own operational log, not in the chain: a record of who looked at what is a
@@ -663,7 +731,9 @@ container, or a downloaded copy of it, it:
 > on the gateway's clock, except where one entry contains another's digest. Anything written after the
 > last witness. That an actor identifier was the agent that acted: an agent using a person's
 > credentials is recorded as that person. That an actor held the role its entry names: the
-> gateway checked the caller's token, and the record keeps the role, not the token. That no single order or treaty can reach both authorities:
+> gateway checked the caller's token, and the record keeps the role, not the token. That a mandate
+> change's proposer staged it: the gateway authenticated them, and the record keeps their
+> identifier, not the proposal. That no single order or treaty can reach both authorities:
 > that is a person's assessment, recorded in the mandate and not checked here. The record evidences
 > what occurred. It does not prevent harm.
 
@@ -683,8 +753,8 @@ dossiers, chain segments, witnesses and `trust/`) plus the verifier.
   `spec`, and old dossiers stay valid under theirs.
 - Every registry version in use is snapshotted into the tenant's container on first use.
 - Changing a tenant's policy (source capture, sensitivity rules, size limits, witness interval,
-  authorities, witness key) is a `config.changed` entry approved by a named person, carrying the
-  whole new mandate (5.6).
+  authorities, witness key) is a `config.changed` entry, staged as a proposal and approved by a
+  named person (7.6), carrying the whole new mandate (5.6).
 
 ## 11 Confirm at build
 

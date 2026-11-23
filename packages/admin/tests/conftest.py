@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -5,28 +6,35 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from sheaf_admin.genesis import GatewayClient
+from sheaf_admin.client import GatewayClient
 from sheaf_core import testing as t
 from sheaf_gateway.app import create_app
 from sheaf_gateway.gateway import Gateway, Settings
 from sheaf_gateway.hooks import Caller
+from sheaf_gateway.state import MemoryState
 from sheaf_gateway.store import MemoryStore
 
 NOW = datetime(2026, 11, 26, 9, 0, tzinfo=UTC)
 
+PROPOSER = "acme-proposer-1|proposer"
+"""The tokens tests sign in with: `id|role,role`, and `app:` before an application's."""
+APPROVER = t.APPROVER["id"]
 
-def write_genesis(directory: Path, *, approver: str = t.APPROVER["id"], **overrides) -> Path:
-    """The genesis input for acme/case-review: `t.mandate_document()`, with each file the mandate
-    names by its SHA-256 named by its path instead, and those files beside it."""
+
+def write_input(
+    directory: Path, *, name: str = "genesis.json", reason: str | None = None, **overrides
+) -> Path:
+    """The input for a mandate of acme/case-review: `t.mandate_document()`, with each file the
+    mandate names by its SHA-256 named by its path instead, and those files beside it."""
     files = {
         "instructions/review.md": t.INSTRUCTIONS,
         "schemas/findings.json": t.FINDINGS_SCHEMA,
         "witness.pem": t.witness_pem(),
-        **{f"roots/{name}.der": t.authority(name).root for name, _ in t.AUTHORITIES},
+        **{f"roots/{authority}.der": t.authority(authority).root for authority, _ in t.AUTHORITIES},
     }
-    for name, data in files.items():
-        (directory / name).parent.mkdir(parents=True, exist_ok=True)
-        (directory / name).write_bytes(data)
+    for relative, data in files.items():
+        (directory / relative).parent.mkdir(parents=True, exist_ok=True)
+        (directory / relative).write_bytes(data)
     mandate = t.mandate_document()
     key = mandate["witness_key"]
     mandate.update(
@@ -47,15 +55,16 @@ def write_genesis(directory: Path, *, approver: str = t.APPROVER["id"], **overri
         },
     )
     mandate.update(overrides)
-    path = directory / "genesis.json"
-    path.write_text(json.dumps({"approver": approver, "mandate": mandate}, indent=2))
+    doc = {"mandate": mandate} if reason is None else {"reason": reason, "mandate": mandate}
+    path = directory / name
+    path.write_text(json.dumps(doc, indent=2))
     return path
 
 
 @pytest.fixture
-def genesis_file(tmp_path):
+def input_file(tmp_path):
     def write(**overrides) -> Path:
-        return write_genesis(tmp_path, **overrides)
+        return write_input(tmp_path, **overrides)
 
     return write
 
@@ -70,29 +79,45 @@ class Clock:
 
 
 def bearer(request):
-    # Test only: the bearer token is the caller's id; "app:" marks an application's token.
+    # Test only: the bearer token is the caller's id, then "|" and its app roles; "app:" marks an
+    # application's token.
     token = request.headers.get("Authorization", "").removeprefix("Bearer ")
     if not token:
         return None
-    if token.startswith("app:"):
-        return Caller(token.removeprefix("app:"), person=False)
-    return Caller(token, person=True)
+    person = not token.startswith("app:")
+    identity, _, roles = token.removeprefix("app:").partition("|")
+    return Caller(identity, frozenset(r for r in roles.split(",") if r), person=person)
 
 
 class World:
-    def __init__(self, bootstrap=t.APPROVER["id"]):
-        self.store = MemoryStore()
+    def __init__(self, bootstrap=APPROVER):
+        self.store, self.state = MemoryStore(), MemoryState()
         self.gateway = Gateway(
-            Settings(chain=t.CHAIN, bootstrap_caller=bootstrap), self.store, clock=Clock()
+            Settings(chain=t.CHAIN, bootstrap_caller=bootstrap),
+            self.store,
+            state=self.state,
+            clock=Clock(),
         )
         self.gateway.recover()
         self.http = TestClient(create_app(self.gateway, authenticate=bearer))
 
-    def client(self, token=t.APPROVER["id"]):
-        return GatewayClient(self.http, "http://testserver", token=lambda: token)
+    def client(self, token=APPROVER, cls=GatewayClient):
+        return cls(self.http, "http://testserver", token=lambda: token)
 
-    def stored(self, genesis):
-        return [self.store.info(upload.sha256) is not None for upload in genesis.uploads]
+    def stored(self, staged):
+        return [self.store.info(upload.sha256) is not None for upload in staged.uploads]
+
+    def proposals(self):
+        return [json.loads(data) for data in self.state.list_proposals()]
+
+    def witness(self, receipt):
+        """The interim witness that puts a committed mandate in force."""
+        witness, tokens = t.attested("interim", receipt["seq"], receipt["hash"])
+        body = {
+            "entry": t.witness_draft(witness),
+            "tokens": {name: base64.b64encode(data).decode() for name, data in tokens.items()},
+        }
+        self.gateway.commit_witness(t.WITNESS["id"], json.dumps(body).encode())
 
 
 @pytest.fixture

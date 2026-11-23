@@ -1,6 +1,7 @@
-# One image for every Sheaf workload (standard 7.1): the gateway by default, and the witness job
-# as a scheduled Container Apps job running `python -m sheaf_witness` with its own identity.
-# `sheaf-admin` is in it too, so a genesis can be checked with the released code.
+# One image for every Sheaf workload (standard 7.1): the gateway by default, the witness job
+# as a scheduled Container Apps job running `python -m sheaf_witness` with its own identity, and
+# the approval page (`sheaf-approve`, standard 7.6) as its own app with no Azure credential.
+# `sheaf-admin` is in it too, so a mandate can be checked with the released code.
 # A mandate records its digest as `gateway.image`, so anyone must be able to rebuild the same
 # digest from the same commit: base images are pinned by digest, and file times come from the
 # commit, not the build.
@@ -27,6 +28,7 @@ WORKDIR /src
 # Locked third-party dependencies first, so a code change does not fetch them again.
 COPY pyproject.toml uv.lock ./
 COPY packages/admin/pyproject.toml packages/admin/
+COPY packages/approve/pyproject.toml packages/approve/
 COPY packages/core/pyproject.toml packages/core/
 COPY packages/gateway/pyproject.toml packages/gateway/
 COPY packages/witness/pyproject.toml packages/witness/
@@ -44,7 +46,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM ${PYTHON_IMAGE}
 # Fixed labels only: a build time here would change the digest a mandate records.
 LABEL org.opencontainers.image.title="Sheaf" \
-      org.opencontainers.image.description="Sheaf write gateway and witness job" \
+      org.opencontainers.image.description="Sheaf write gateway, witness job and approval page" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/AttuneSolutions/sheaf"
 COPY --from=build /app /app

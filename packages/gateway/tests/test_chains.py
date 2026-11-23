@@ -17,9 +17,9 @@ from .test_api import (
     FailingStore,
     commit,
     header_caller,
+    stage,
     submit_witness,
     upload,
-    upload_mandate,
 )
 
 OTHER = "acme/claims-triage"
@@ -44,7 +44,7 @@ class World:
 
     def genesis(self, chain):
         doc = t.mandate_document(chain=chain)
-        upload_mandate(self.client, doc)
+        stage(self.client, doc)
         config = commit(self.client, BOOTSTRAP, {**t.config_changed(doc), "chain": chain})
         assert config.status_code == 201, config.json()
         interim = submit_witness(

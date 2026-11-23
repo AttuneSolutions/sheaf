@@ -94,6 +94,10 @@ class World:
             )
         for path, data in t.trust_files(doc).items():
             self.gateway.put_trust(approver, path, data)
+        request = {"chain": t.CHAIN, "mandate": t.artefact_sha256(t.mandate_bytes(doc))}
+        self.gateway.propose(
+            t.PROPOSER["id"], {**request, "reason": "genesis"}, roles=("proposer",), person=True
+        )
         return self.commit(approver, t.config_changed(doc))
 
     def commit(self, caller, entry):

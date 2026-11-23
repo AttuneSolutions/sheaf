@@ -39,7 +39,8 @@
         "roles",
         "kinds",
         "source_capture",
-        "sensitivity"
+        "sensitivity",
+        "four_eyes"
       ],
       "properties": {
         "callers": {
@@ -153,7 +154,7 @@
           ]
         },
         "sensitivity": {
-          "description": "the directory roles that may open an artefact of each sensitivity (8)",
+          "description": "the app roles (the roles claim of a viewer's Entra ID token) that may open an artefact of each sensitivity (8)",
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -166,24 +167,28 @@
               "type": "array",
               "uniqueItems": true,
               "items": {
-                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/role"
               }
             },
             "staff_pii": {
               "type": "array",
               "uniqueItems": true,
               "items": {
-                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/role"
               }
             },
             "none": {
               "type": "array",
               "uniqueItems": true,
               "items": {
-                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/label"
+                "$ref": "urn:sheaf:sheaf.defs/1#/$defs/role"
               }
             }
           }
+        },
+        "four_eyes": {
+          "description": "true: whoever proposed a mandate change may not approve it (7.6). The mandate in force decides, or the genesis mandate for itself",
+          "type": "boolean"
         }
       }
     },

@@ -181,6 +181,21 @@ def test_a_lease_already_lost_is_given_up_without_an_error(container):
     assert not state.held()
 
 
+def test_proposals_are_kept_per_chain_by_the_mandates_digest(container):
+    state = AzureState(container, t.WORKFLOW)
+    other = AzureState(container, "claims-triage")
+
+    state.write_proposal("a" * 64, b'{"status":"pending"}')
+    state.write_proposal("a" * 64, b'{"status":"withdrawn"}')
+    state.write_proposal("b" * 64, b'{"status":"pending"}')
+
+    assert state.read_proposal("a" * 64) == b'{"status":"withdrawn"}'
+    assert state.read_proposal("c" * 64) is None
+    assert state.list_proposals() == [b'{"status":"withdrawn"}', b'{"status":"pending"}']
+    assert other.list_proposals() == []
+    assert f"proposals/{t.WORKFLOW}/{'a' * 64}.json" in container.blobs
+
+
 # -- reading a blob with one plain GET -----------------------------------------------------------
 
 URL = "https://acme.blob.core.windows.net/evidence"

@@ -16,6 +16,7 @@ from sheaf_gateway.hooks import Caller
 from sheaf_gateway.store import MemoryStore
 
 BOOTSTRAP = t.APPROVER["id"]
+PROPOSER = t.PROPOSER["id"]
 
 
 class Clock:
@@ -41,7 +42,8 @@ def header_caller(request):
     if not identity:
         return None
     roles = request.headers.get("X-Test-Roles", "")
-    return Caller(identity, frozenset(role for role in roles.split(",") if role))
+    person = {"yes": True, "no": False}.get(request.headers.get("X-Test-Person", ""))
+    return Caller(identity, frozenset(role for role in roles.split(",") if role), person=person)
 
 
 @pytest.fixture
@@ -101,15 +103,14 @@ def commit(client, caller, entry, *, key=None, raw=None, roles=()):
     return client.post("/v1/entries", content=body, headers=headers)
 
 
-def put_trust(client, caller, path, data):
-    return client.put(
-        f"/v1/{path}",
-        content=data,
-        headers={"X-Test-Caller": caller, "Content-Type": "application/octet-stream"},
-    )
+def put_trust(client, caller, path, data, roles=()):
+    headers = {"X-Test-Caller": caller, "Content-Type": "application/octet-stream"}
+    if roles:
+        headers["X-Test-Roles"] = ",".join(roles)
+    return client.put(f"/v1/{path}", content=data, headers=headers)
 
 
-def upload_mandate(client, doc, caller=None):
+def upload_mandate(client, doc, caller=None, roles=()):
     """Upload everything a config.changed for `doc` needs: the mandate, its instructions and
     schema, and the trust files it names."""
     caller = caller or BOOTSTRAP
@@ -118,11 +119,33 @@ def upload_mandate(client, doc, caller=None):
         (t.INSTRUCTIONS, "text.markdown", "text/markdown"),
         (t.FINDINGS_SCHEMA, "schema.json", "application/schema+json"),
     ):
-        response = upload(client, caller, data, kind, media_type, chain=doc["chain"])
+        response = upload(client, caller, data, kind, media_type, chain=doc["chain"], roles=roles)
         assert response.status_code in (200, 201), response.json()
     for path, data in t.trust_files(doc).items():
-        response = put_trust(client, caller, path, data)
+        response = put_trust(client, caller, path, data, roles=roles)
         assert response.status_code in (200, 201), response.json()
+
+
+def propose(client, doc, *, caller=PROPOSER, roles=("proposer",), person="yes", **fields):
+    """Stage `doc` as a proposal (7.6), as a proposer signed in as a person by default."""
+    body = {
+        "chain": doc["chain"],
+        "mandate": t.artefact_sha256(t.mandate_bytes(doc)),
+        "reason": "genesis",
+        **fields,
+    }
+    headers = {"X-Test-Caller": caller, "X-Test-Person": person}
+    if roles:
+        headers["X-Test-Roles"] = ",".join(roles)
+    return client.post("/v1/proposals", json=body, headers=headers)
+
+
+def stage(client, doc, **fields):
+    """Upload `doc` and everything it names as a proposer, and propose it."""
+    upload_mandate(client, doc, caller=PROPOSER, roles=("proposer",))
+    response = propose(client, doc, **fields)
+    assert response.status_code in (200, 201), response.json()
+    return response.json()
 
 
 def submit_witness(client, witness, tokens, *, caller=None, key=None, raw=None):
@@ -142,7 +165,7 @@ def submit_witness(client, witness, tokens, *, caller=None, key=None, raw=None):
 
 def genesis(client):
     doc = t.mandate_document()
-    upload_mandate(client, doc)
+    stage(client, doc)
     config = commit(client, BOOTSTRAP, t.config_changed(doc))
     assert config.status_code == 201, config.json()
     interim = submit_witness(client, *t.attested("interim", 1, config.json()["hash"]))
@@ -444,7 +467,7 @@ def test_rules_that_need_the_chain_are_enforced(client):
 
 def test_a_witness_is_submitted_with_its_tokens_not_as_a_bare_entry(client):
     doc = t.mandate_document()
-    upload_mandate(client, doc)
+    stage(client, doc)
     config = commit(client, BOOTSTRAP, t.config_changed(doc)).json()
     witness, _ = t.attested("interim", 1, config["hash"])
 
@@ -506,7 +529,7 @@ def test_the_same_bytes_are_not_stored_under_two_declarations(client):
 
 def test_while_the_genesis_mandate_waits_only_the_bootstrap_caller_writes(client):
     doc = t.mandate_document()
-    upload_mandate(client, doc)
+    stage(client, doc)
     assert commit(client, BOOTSTRAP, t.config_changed(doc)).status_code == 201
     assert commit(client, t.AGENT["id"], t.notice(dossier=None)).status_code == 403
     assert commit(client, BOOTSTRAP, t.notice(dossier=None, actor=t.APPROVER)).status_code == 201
@@ -573,7 +596,7 @@ def test_a_failing_event_publisher_does_not_fail_a_committed_entry():
 
 def commit_genesis_config(client):
     doc = t.mandate_document()
-    upload_mandate(client, doc)
+    stage(client, doc)
     return commit(client, BOOTSTRAP, t.config_changed(doc))
 
 
@@ -602,7 +625,7 @@ def test_a_rejection_does_not_echo_a_huge_value_back(client):
 def test_a_mandate_can_be_replaced_even_if_its_policy_omits_the_mandate_kinds(client):
     doc = t.mandate_document()
     del doc["policy"]["kinds"]["text.markdown"]
-    upload_mandate(client, doc)
+    stage(client, doc)
     config = commit(client, BOOTSTRAP, t.config_changed(doc)).json()
     assert submit_witness(client, *t.attested("interim", 1, config["hash"])).status_code == 201
 
@@ -612,6 +635,7 @@ def test_a_mandate_can_be_replaced_even_if_its_policy_omits_the_mandate_kinds(cl
         == 201
     )
     previous = {"version": doc["version"], "config": config["hash"]}
+    assert propose(client, new, reason="new mandate").status_code == 201
     response = commit(client, BOOTSTRAP, t.config_changed(new, old=doc, previous=previous))
 
     assert response.status_code == 201, response.json()
@@ -634,7 +658,7 @@ def test_the_api_description_is_not_served(client):
 
 def configured(client):
     doc = t.mandate_document()
-    upload_mandate(client, doc)
+    stage(client, doc)
     return commit(client, BOOTSTRAP, t.config_changed(doc)).json()
 
 
@@ -645,9 +669,9 @@ def test_a_mandate_applies_only_once_its_trust_files_are_stored(client):
         (t.INSTRUCTIONS, "text.markdown", "text/markdown"),
         (t.FINDINGS_SCHEMA, "schema.json", "application/schema+json"),
     ):
-        upload(client, BOOTSTRAP, data, kind, media_type)
+        upload(client, PROPOSER, data, kind, media_type, roles=("proposer",))
 
-    response = commit(client, BOOTSTRAP, t.config_changed(doc))
+    response = propose(client, doc)
 
     assert response.status_code == 422
     assert set(problems(response)) == {"trust_missing"}

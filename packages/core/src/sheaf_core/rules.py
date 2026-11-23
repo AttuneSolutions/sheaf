@@ -49,6 +49,25 @@ class Mandate:
     document: Mapping[str, Any]
     schemas: Mapping[str, Any] = field(default_factory=dict)
     """The tenant schemas the mandate names, by identifier."""
+    mandate: str = ""
+    """The SHA-256 of the mandate artefact: its fingerprint."""
+    approved_by: str = ""
+    committed_at: str = ""
+    """When its `config.changed` was committed, as the entry says."""
+
+
+@dataclass(frozen=True)
+class WitnessSeen:
+    """The last witness entry of one kind, as a status report shows it: identifiers, times and
+    authority names only."""
+
+    seq: int
+    committed_at: str
+    last_seq: int
+    interval_to: str | None
+    """A daily witness's end, as written; None for an interim one."""
+    attested: tuple[str, ...]
+    """The authorities whose tokens it lists as obtained, in its order."""
 
 
 @dataclass(frozen=True)
@@ -88,11 +107,31 @@ class ChainState:
         self._expired_artefacts: set[str] = set()
         self._interims: set[int] = set()
         self._last_daily_end: datetime | None = None
+        self._last_witness: dict[str, WitnessSeen] = {}
 
     @property
     def head(self) -> tuple[int, str] | None:
         """The `seq` and `hash` of the last entry, or None for an empty chain."""
         return (self._entries[-1].seq, self._entries[-1].hash) if self._entries else None
+
+    def last_witness(self, entry_type: str) -> WitnessSeen | None:
+        """The last `witness.daily` or `witness.interim` committed, or None."""
+        return self._last_witness.get(entry_type)
+
+    @property
+    def last_daily_end(self) -> datetime | None:
+        """Where the last daily witness ended, or None before the first."""
+        return self._last_daily_end
+
+    @property
+    def head_at(self) -> datetime | None:
+        """When the last entry was committed, or None for an empty chain."""
+        return self._entries[-1].committed_at if self._entries else None
+
+    @property
+    def genesis_at(self) -> datetime | None:
+        """When the chain's first entry was committed."""
+        return self._entries[0].committed_at if self._entries else None
 
     def opened_at(self, dossier_id: str) -> datetime | None:
         """When a dossier's `dossier.opened` was committed: where its blob is filed (4)."""
@@ -208,13 +247,26 @@ class ChainState:
                 version=body["version"],
                 document=document,
                 schemas=schemas,
+                mandate=body["mandate"],
+                approved_by=body["approved_by"]["id"],
+                committed_at=entry["committed_at"],
             )
-        elif entry_type == "witness.interim":
-            self._interims.add(body["last_seq"])
-            if self.pending is not None and body["last_seq"] == self.pending.seq:
-                self.in_force, self.pending = self.pending, None
-        elif entry_type == "witness.daily":
-            self._last_daily_end = daily_end
+        elif entry_type in ("witness.daily", "witness.interim"):
+            self._last_witness[entry_type] = WitnessSeen(
+                seq=record.seq,
+                committed_at=entry["committed_at"],
+                last_seq=body["last_seq"],
+                interval_to=body["interval"]["to"] if daily_end is not None else None,
+                attested=tuple(
+                    a["authority"] for a in body["time_attestation"]["authorities"] if a["obtained"]
+                ),
+            )
+            if entry_type == "witness.daily":
+                self._last_daily_end = daily_end
+            else:
+                self._interims.add(body["last_seq"])
+                if self.pending is not None and body["last_seq"] == self.pending.seq:
+                    self.in_force, self.pending = self.pending, None
         elif entry_type == "retention.expired":
             for expired in body["dossiers"]:
                 self._dossiers[expired].expired = True
@@ -296,6 +348,10 @@ class _Check:
             self.report("identifier_not_pseudonymised", "$.actor.id", "a person is a pseudonym")
         if subject is not None and not PSEUDONYM.fullmatch(subject["id"]):
             self.report("identifier_not_pseudonymised", "$.subject.id", "a subject is a pseudonym")
+        proposer = self.body.get("proposed_by") if document is not None else None
+        if proposer and proposer["kind"] == "person" and not PSEUDONYM.fullmatch(proposer["id"]):
+            here = "$.body.proposed_by.id"
+            self.report("identifier_not_pseudonymised", here, "a person is a pseudonym")
         if document is not None:
             assessor = document["authorities"]["assessment"]["by"]["id"]
             if not PSEUDONYM.fullmatch(assessor):
@@ -528,6 +584,16 @@ class _Check:
                 self.report("part_digest_mismatch", f"$.body.parts.{part}", f"is {digests[part]}")
 
         old = None if genesis or state.in_force is None else state.in_force.document
+        # The mandate in force decides, so a change cannot turn four eyes off for itself; the
+        # genesis mandate decides for itself.
+        governing = doc if old is None else old
+        same = body["proposed_by"]["id"] == body["approved_by"]["id"]
+        if governing["policy"]["four_eyes"] and same:
+            self.report(
+                "four_eyes",
+                "$.body.approved_by",
+                "whoever proposed a mandate change may not approve it (the mandate's four_eyes)",
+            )
         expected = changed_parts(old, doc)
         if set(body["changed"]) != set(expected):
             self.report(

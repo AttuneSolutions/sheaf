@@ -36,6 +36,7 @@ ADMIN = {"kind": "system", "id": "acme-admin-tool", "version": "1.0.0"}
 WITNESS = {"kind": "system", "id": "acme-witness", "version": "0.1.0"}
 REVIEWER = {"kind": "person", "id": "acme-reviewer-1", "role": "reviewer"}
 APPROVER = {"kind": "person", "id": "acme-approver-1"}
+PROPOSER = {"kind": "person", "id": "acme-proposer-1"}
 
 SUBJECT = {"system": "crm", "object": "Case", "id": "C104233"}
 RETENTION = {"class": "regulated-record", "min_until": "2033-11-26"}
@@ -276,6 +277,7 @@ def mandate_document(**overrides: Any) -> dict[str, Any]:
                 "staff_pii": ["case-review-admin"],
                 "none": ["case-reviewer", "case-review-admin"],
             },
+            "four_eyes": True,
         },
         "instructions": [{"name": "review-instructions", "sha256": artefact_sha256(INSTRUCTIONS)}],
         "schemas": [{"id": "acme.findings/1", "sha256": artefact_sha256(FINDINGS_SCHEMA)}],
@@ -354,6 +356,7 @@ def config_changed(
     *,
     previous: Mapping[str, Any] | None = None,
     old: Mapping[str, Any] | None = None,
+    proposed_by: Mapping[str, Any] = PROPOSER,
     instructions: Sequence[bytes] = (INSTRUCTIONS,),
     schemas: Sequence[bytes] = (FINDINGS_SCHEMA,),
 ) -> dict[str, Any]:
@@ -364,6 +367,7 @@ def config_changed(
         "mandate": artefact_sha256(mandate_bytes(doc)),
         # Tolerates a missing part, so a test can submit a broken mandate to the rules.
         "parts": {part: canonical_digest(doc.get(part)) for part in PARTS},
+        "proposed_by": dict(proposed_by),
         "approved_by": APPROVER,
         "reason": "genesis" if previous is None else "new mandate",
     }

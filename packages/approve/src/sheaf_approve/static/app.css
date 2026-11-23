@@ -1,0 +1,136 @@
+/* The approval page, on top of Pico CSS (pico.css). Pico sets the typography, colours, forms,
+   cards and light and dark themes; this adds the page's own pieces. */
+
+:root {
+  --sheaf-removed: var(--pico-del-color);
+  --sheaf-added: var(--pico-ins-color);
+  --sheaf-warning: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { --sheaf-warning: #f59e0b; }
+}
+
+/* -- the masthead ------------------------------------------------------------------------- */
+
+.masthead {
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  margin-bottom: var(--pico-spacing);
+}
+
+.brand { display: flex; align-items: center; gap: 0.75rem; }
+.brand .mark {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  background: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+  font-weight: 700;
+}
+.brand .product { color: var(--pico-muted-color); }
+.who { color: var(--pico-muted-color); font-size: 0.9rem; }
+
+button.small { padding: 0.35rem 0.8rem; font-size: 0.9rem; }
+
+main:focus { outline: none; }
+
+/* -- notices -------------------------------------------------------------------------------- */
+
+.notice {
+  padding: 0.75rem 1rem;
+  border-left: 0.3rem solid;
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-sectioning-background-color);
+}
+.notice-error { border-color: var(--sheaf-removed); color: var(--sheaf-removed); font-weight: 600; }
+.notice-ok { border-color: var(--sheaf-added); color: var(--sheaf-added); font-weight: 600; }
+.notice-warning { border-color: var(--sheaf-warning); color: var(--sheaf-warning); }
+
+/* -- signed out and the list ---------------------------------------------------------------- */
+
+.hero { max-width: 40rem; }
+.empty { color: var(--pico-muted-color); font-style: italic; }
+
+.proposals article { margin-bottom: var(--pico-spacing); }
+.proposals article > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.proposals .reason { margin-bottom: 0.5rem; }
+.proposals .meta { color: var(--pico-muted-color); font-size: 0.9rem; margin-bottom: 0; }
+.proposals footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: calc(var(--pico-block-spacing-vertical) * 0.6);
+  padding-bottom: calc(var(--pico-block-spacing-vertical) * 0.6);
+}
+.proposals footer button { margin-bottom: 0; }
+
+.tag {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--pico-primary-focus);
+  color: var(--pico-primary);
+}
+
+/* -- one proposal --------------------------------------------------------------------------- */
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1.25rem;
+  margin: 0;
+}
+.facts dt { color: var(--pico-muted-color); font-weight: 400; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts code { font-size: 0.85rem; }
+
+.changes article > header h3,
+.approve-card > header h2 { margin: 0; font-size: 1.05rem; }
+.changes .label {
+  margin: 0.5rem 0 0.25rem;
+  color: var(--pico-muted-color);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.changes ul { list-style: none; padding-left: 0; margin-bottom: 0.25rem; }
+.changes li { padding-left: 1.4rem; position: relative; list-style: none; }
+.changes li::before { position: absolute; left: 0; font-weight: 700; }
+.changes .removed li::before { content: "−"; color: var(--sheaf-removed); }
+.changes .added li::before { content: "+"; color: var(--sheaf-added); }
+
+.hint { color: var(--pico-muted-color); }
+.plain { border-top: 1px solid var(--pico-muted-border-color); }
+.plain details {
+  margin: 0;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+.plain details > summary { font-weight: 600; }
+.plain details[open] > summary { margin-bottom: 0.5rem; }
+.plain ul { margin-bottom: 0.25rem; }
+
+.technical-details { margin-top: calc(var(--pico-spacing) * 1.5); }
+
+.technical th { color: var(--pico-muted-color); font-weight: 500; white-space: nowrap; }
+.technical td { font-family: var(--pico-font-family-monospace); font-size: 0.85rem; overflow-wrap: anywhere; }
+
+.approve-card { margin-top: calc(var(--pico-spacing) * 2); border-top: 0.25rem solid var(--pico-primary); }
+.approve-card input { max-width: 28rem; }
+.approve-card button[type="submit"] { width: auto; min-width: 10rem; }
+.approve-card small { display: block; margin-bottom: var(--pico-spacing); color: var(--pico-muted-color); }
+
+@media (max-width: 36rem) {
+  .facts { grid-template-columns: 1fr; }
+  .facts dd { margin-bottom: 0.5rem; }
+  .brand .product { display: none; }
+}

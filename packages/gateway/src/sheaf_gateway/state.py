@@ -1,7 +1,8 @@
 """The gateway's own mutable state (7.1): the chain-head lease, so a chain has one writer; the
 write-ahead journal, so a restart can finish an entry a crash left half-written (7.2 step 3); and
 the receipts kept for idempotency keys, so a retry after a restart gets the first receipt rather
-than a second entry (7.2 step 2). All live in the `gateway-state` container, never in `evidence`."""
+than a second entry (7.2 step 2); and the proposals staged for its mandate (7.6). All live in the
+`gateway-state` container, never in `evidence`."""
 
 from typing import Protocol
 
@@ -34,6 +35,15 @@ class GatewayState(Protocol):
         """Keep a receipt. Writing the same one again, as finishing from the journal does, is
         harmless."""
 
+    def read_proposal(self, sha256: str) -> bytes | None:
+        """The proposal staged for the mandate with this SHA-256, or None."""
+
+    def write_proposal(self, sha256: str, data: bytes) -> None:
+        """Keep a proposal, replacing any kept for the same mandate."""
+
+    def list_proposals(self) -> list[bytes]:
+        """Every proposal kept for this chain."""
+
 
 class MemoryState:
     """For tests and the memory store: nothing survives the process."""
@@ -43,6 +53,7 @@ class MemoryState:
         self._lost = False
         self._journal: bytes | None = None
         self._receipts: dict[str, bytes] = {}
+        self._proposals: dict[str, bytes] = {}
 
     def acquire(self) -> None:
         if self._taken:
@@ -66,6 +77,15 @@ class MemoryState:
 
     def write_receipt(self, name: str, data: bytes) -> None:
         self._receipts[name] = data
+
+    def read_proposal(self, sha256: str) -> bytes | None:
+        return self._proposals.get(sha256)
+
+    def write_proposal(self, sha256: str, data: bytes) -> None:
+        self._proposals[sha256] = data
+
+    def list_proposals(self) -> list[bytes]:
+        return [self._proposals[name] for name in sorted(self._proposals)]
 
     def release(self) -> None:
         self._taken = False

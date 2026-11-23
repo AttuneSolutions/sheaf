@@ -218,9 +218,10 @@ class BlobStore:
 
 
 class AzureState:
-    """The chain-head lease, the journal and the idempotency receipts, in the `gateway-state`
-    container. Receipts are under `receipts/{workflow}/`, apart from the lease and the journal,
-    so a lifecycle rule can delete old ones by prefix (deployment guide, section 4)."""
+    """The chain-head lease, the journal, the idempotency receipts and the proposals, in the
+    `gateway-state` container. Receipts are under `receipts/{workflow}/`, apart from the lease and
+    the journal, so a lifecycle rule can delete old ones by prefix (deployment guide, section 4);
+    proposals are under `proposals/{workflow}/`, one blob each, named by the mandate's SHA-256."""
 
     LEASE_SECONDS = 60
 
@@ -300,3 +301,24 @@ class AzureState:
 
     def write_receipt(self, name: str, data: bytes) -> None:
         self._receipt(name).upload_blob(data, overwrite=True)
+
+    def _proposal(self, sha256: str) -> Any:
+        return self._container.get_blob_client(f"proposals/{self._workflow}/{sha256}.json")
+
+    def read_proposal(self, sha256: str) -> bytes | None:
+        try:
+            return self._proposal(sha256).download_blob().readall()
+        except ResourceNotFoundError:
+            return None
+
+    def write_proposal(self, sha256: str, data: bytes) -> None:
+        self._proposal(sha256).upload_blob(data, overwrite=True)
+
+    def list_proposals(self) -> list[bytes]:
+        prefix = f"proposals/{self._workflow}/"
+        names = sorted(b.name for b in self._container.list_blobs(name_starts_with=prefix))
+        found = []
+        for name in names:
+            with contextlib.suppress(ResourceNotFoundError):
+                found.append(self._container.get_blob_client(name).download_blob().readall())
+        return found

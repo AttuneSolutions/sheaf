@@ -662,6 +662,7 @@ def test_a_mandate_applies_only_once_its_trust_files_are_stored(fresh):
 
 PSEUDO_APPROVER = {"kind": "person", "id": "ps-" + "a" * 32}
 PSEUDO_SUBJECT = {**t.SUBJECT, "id": "ps-" + "b" * 32}
+PSEUDO_PROPOSER = {"kind": "person", "id": "ps-" + "e" * 32}
 
 
 def pseudonymised_doc(**overrides):
@@ -676,6 +677,7 @@ def pseudonymised_doc(**overrides):
 def pseudonymised_genesis(scenario, doc=None, approver=PSEUDO_APPROVER):
     entry = scenario.config(doc or pseudonymised_doc())
     entry["actor"], entry["body"]["approved_by"] = dict(approver), dict(approver)
+    entry["body"]["proposed_by"] = dict(PSEUDO_PROPOSER)
     return entry
 
 
@@ -710,3 +712,87 @@ def test_under_pseudonyms_a_subject_and_a_reviewer_are_named_by_pseudonym(fresh)
     ]
     reviewer = {"kind": "person", "id": "ps-" + "c" * 32, "role": "reviewer"}
     assert fresh.codes(t.decision(decided, subject=PSEUDO_SUBJECT, actor=reviewer)) == []
+
+
+def test_under_pseudonyms_the_proposer_is_named_by_pseudonym(fresh):
+    entry = pseudonymised_genesis(fresh)
+    entry["body"]["proposed_by"] = {"kind": "person", "id": "acme-proposer-1"}
+
+    assert fresh.codes(entry) == ["identifier_not_pseudonymised"]
+    entry["body"]["proposed_by"] = {"kind": "person", "id": "ps-" + "d" * 32}
+    assert fresh.codes(entry) == []
+
+
+def test_under_pseudonyms_a_system_proposer_is_named_in_clear(fresh):
+    entry = pseudonymised_genesis(fresh)
+    entry["body"]["proposed_by"] = {"kind": "system", "id": "acme-release-pipeline"}
+
+    assert fresh.codes(entry) == []
+
+
+# -- who proposed a mandate change, and four eyes -------------------------------------------------
+
+
+def test_a_mandate_change_names_who_proposed_it(fresh):
+    entry = fresh.config()
+    del entry["body"]["proposed_by"]
+
+    assert fresh.codes(entry) == ["schema"]
+
+
+def test_under_four_eyes_the_proposer_does_not_approve_the_genesis(fresh):
+    entry = fresh.config(t.mandate_document())
+    entry["body"]["proposed_by"] = dict(t.APPROVER)
+
+    assert fresh.codes(entry) == ["four_eyes"]
+
+
+def test_without_four_eyes_the_proposer_may_approve(fresh):
+    doc = t.mandate_document()
+    doc["policy"]["four_eyes"] = False
+    entry = fresh.config(doc)
+    entry["body"]["proposed_by"] = dict(t.APPROVER)
+
+    assert fresh.codes(entry) == []
+
+
+def test_a_change_is_held_to_four_eyes_by_the_mandate_in_force(s):
+    # The mandate in force asks for four eyes; a change that turns it off is still held to it.
+    old = t.mandate_document()
+    new = copy.deepcopy(old)
+    new["version"] = "2026.11.2"
+    new["policy"]["four_eyes"] = False
+    previous = {"version": old["version"], "config": s.state.in_force.config}
+    entry = s.config(new, previous=previous, old=old)
+    entry["body"]["proposed_by"] = dict(t.APPROVER)
+
+    assert s.codes(entry) == ["four_eyes"]
+
+
+# -- what the state says about the mandate and the witnesses, for status -------------------------
+
+
+def test_the_mandate_in_force_names_its_fingerprint_and_approver(fresh):
+    doc = t.mandate_document()
+    config = fresh.commit(fresh.config(doc))
+
+    pending = fresh.state.pending
+    assert pending.mandate == t.artefact_sha256(t.mandate_bytes(doc))
+    assert pending.approved_by == t.APPROVER["id"]
+    assert pending.committed_at == config["committed_at"]
+    fresh.commit(fresh.interim())
+    assert fresh.state.in_force.mandate == pending.mandate
+
+
+def test_the_state_keeps_the_last_witness_of_each_kind(s):
+    assert s.state.last_witness("witness.daily") is None
+    interim = s.state.last_witness("witness.interim")
+    assert interim.seq == 2 and interim.last_seq == 1
+    assert interim.attested == ("tsa-a", "tsa-b")
+
+    s.now = datetime(2026, 11, 27, 0, 10, tzinfo=UTC)
+    daily = s.commit(s.daily(date(2026, 11, 26)))
+    seen = s.state.last_witness("witness.daily")
+    assert (seen.seq, seen.committed_at) == (daily["seq"], daily["committed_at"])
+    assert seen.interval_to == "2026-11-27T00:00:00Z"
+    assert seen.attested == ("tsa-a", "tsa-b")

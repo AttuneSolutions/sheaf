@@ -89,6 +89,37 @@ jobs:
       - name: The admin tool is in the same image
         run: docker run --rm --entrypoint sheaf-admin sheaf:ci --help
 
+      # The approval page holds no credential and keeps nothing, so a test configuration is enough
+      # to boot it; signing in is checked on a tenant (deployment guide).
+      - name: The approval page starts from the same image and answers with its headers
+        run: |
+          set -euo pipefail
+          docker run -d --name sheaf-approve-ci -p 8090:8080 --entrypoint sheaf-approve \
+            -e SHEAF_GATEWAY_URL=https://gateway.acme.example \
+            -e SHEAF_ENTRA_TENANT=00000000-0000-4000-8000-00000000aaaa \
+            -e SHEAF_APPROVE_CLIENT_ID=00000000-0000-4000-8000-00000000bbbb \
+            -e SHEAF_GATEWAY_SCOPE=api://00000000-0000-4000-8000-00000000cccc/user_impersonation \
+            -e SHEAF_APPROVE_URL=http://localhost:8090/ \
+            -e SHEAF_CHAINS=acme/case-review \
+            sheaf:ci
+          for attempt in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8090/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8090/healthz
+          curl -fsS -D /tmp/approve-headers -o /dev/null http://127.0.0.1:8090/app.js
+          grep -i "^content-security-policy: default-src 'none'" /tmp/approve-headers
+
+      - name: The approval page refuses to start unconfigured, with exit code 2
+        run: |
+          set +e
+          docker run --rm --entrypoint sheaf-approve sheaf:ci
+          code=$?
+          echo "sheaf-approve exited with $code"
+          test "$code" = 2
+
       - name: Container logs
         if: always()
-        run: docker logs sheaf-ci || true
+        run: |
+          docker logs sheaf-ci || true
+          docker logs sheaf-approve-ci || true

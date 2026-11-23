@@ -1,8 +1,8 @@
 # Deploying Sheaf
 
 How to deploy Sheaf for one tenant in its own Azure subscription: the storage, the witness key, the
-identities, the gateway, the witness job, the checks before anything is locked, and the first
-entry. Sections of [the standard](standard.md) are cited by number.
+identities, the gateway, the witness job, the approval page, the checks before anything is locked,
+and the first entry. Sections of [the standard](standard.md) are cited by number.
 
 Examples use the tenant `acme`, the workflow `case-review` and names in angle brackets, such as
 `<rg>`, for values you choose. Commands are the Azure CLI, run by someone who can create resources
@@ -23,7 +23,8 @@ before you plan a go-live date.
 | Container Apps environment | Internal only: reachable from the virtual network, not the internet |
 | Gateway app | One for the tenant, serving every workflow's chain, one replica (7.1) |
 | Witness job | One scheduled job for every chain, from the same image, with its own identity (7.5) |
-| Entra ID app registration | The gateway's API: the audience callers ask for tokens to, and its app roles |
+| Approval service | `sheaf-approve`, from the same image: where an approver approves a mandate change in their own browser (7.6). It has no identity of its own |
+| Two Entra ID app registrations | The gateway's API (the audience callers ask for tokens to, and its app roles), and the approval page's sign-in |
 | Two managed identities | The gateway's and the witness's, never shared |
 
 There is no reverse proxy in front of the gateway. The environment's built-in ingress terminates
@@ -31,6 +32,11 @@ TLS and, set to internal, admits only callers inside the virtual network. A seco
 one more thing that sees every artefact and every caller's token. If a caller must reach the
 gateway from outside the network, put an Azure-managed front door in front of it (Application
 Gateway with WAF, or Front Door Premium over Private Link) rather than a proxy you run yourself.
+
+The approval page is the one thing people reach from outside the network: an approver uses their
+own browser on their own device, where the tenant's Conditional Access is satisfied, and the page
+relays their token to the gateway from inside. It is published through the tenant's reverse proxy
+(section 8); the gateway stays internal.
 
 ## 2 Decide first
 
@@ -46,8 +52,14 @@ entry; the rest change only through a `config.changed`.
   object ID, so keep your own record of whose each object ID was for the whole retention period.
 - **Time-stamp authorities:** the free default (FreeTSA, Sectigo and DigiCert, in three
   jurisdictions) or paid ones, and who signs the assessment (5.2, 7.2).
-- **The approver:** the person who submits the genesis `config.changed` with their own sign-in.
-  Their object ID is the gateway's bootstrap caller.
+- **Who proposes and who approves** (7.6): proposers stage mandate changes; an approver, usually
+  the workflow's policy owner, approves each one with their own sign-in. The genesis approver's
+  object ID is the gateway's bootstrap caller. Decide whether one person may do both
+  (`policy.four_eyes`): `true` is recommended, and needed wherever an operator account is also in
+  the approver group for routine changes. Under it, the genesis is proposed by someone other
+  than the bootstrap caller.
+- **How approvers reach the approval page:** the tenant's reverse proxy, and the address it
+  publishes (section 8).
 - **Callers:** each agent or application that writes entries, by object ID or app role, and the
   entry types each may write.
 - **The image:** the digest of a release, such as
@@ -110,6 +122,8 @@ az storage container immutability-policy create -g <rg> --account-name <account>
   immutability.
 - The gateway's receipts for idempotency keys, in `gateway-state/receipts/`, are deleted after 30
   days, the least the standard promises callers (7.2).
+- Proposals, in `gateway-state/proposals/`, are deleted 180 days after they last changed: long
+  after any could still be pending (at most 90 days), and the record keeps every approval.
 - Earlier versions in `gateway-state` are deleted after a week. Versioning is on for the whole
   account, so every journal write leaves one behind.
 
@@ -123,6 +137,10 @@ az storage container immutability-policy create -g <rg> --account-name <account>
     "definition": {
       "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["gateway-state/receipts/"] },
       "actions": { "baseBlob": { "delete": { "daysAfterModificationGreaterThan": 30 } } } } },
+  { "name": "proposals-after-180-days", "enabled": true, "type": "Lifecycle",
+    "definition": {
+      "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["gateway-state/proposals/"] },
+      "actions": { "baseBlob": { "delete": { "daysAfterModificationGreaterThan": 180 } } } } },
   { "name": "gateway-state-versions-after-7-days", "enabled": true, "type": "Lifecycle",
     "definition": {
       "filters": { "blobTypes": ["blockBlob"], "prefixMatch": ["gateway-state/"] },
@@ -201,38 +219,84 @@ new current version on top of it. Without it, Azure refuses any upload to an exi
 retention needs `immutableStorage/runAsSuperUser/action`, which also lets an unlocked policy be
 removed; once section 10 locks it, nobody can remove or shorten it.
 
+A proposer compares the witness key file in a new mandate with the key the vault holds, before
+staging it (section 11), and needs to read the public key and nothing more:
+
+```json
+{ "Name": "Sheaf witness key reader", "IsCustom": true,
+  "Description": "Read the witness key's public part. No signing.",
+  "Actions": [], "NotActions": [],
+  "DataActions": [ "Microsoft.KeyVault/vaults/keys/read" ],
+  "NotDataActions": [], "AssignableScopes": ["/subscriptions/<subscription>"] }
+```
+
 | Identity | Role | Scope |
 |---|---|---|
 | Gateway | Sheaf evidence writer | The `evidence` container |
 | Gateway | Storage Blob Data Contributor | The `gateway-state` container |
 | Witness | Storage Blob Data Reader | The `evidence` container |
 | Witness | Sheaf witness signer | The witness key |
+| Proposers (a group, or a proposer's managed identity) | Sheaf witness key reader | The witness key |
+
+The approval service has no identity and no role: it acts only with the approver's own token.
+Nobody who approves needs, or should have, write access to the witness job or any identity able
+to sign with the witness key.
 
 A container scope is
 `<account id>/blobServices/default/containers/<name>`; a key scope is `<vault id>/keys/<name>`.
 Under pseudonymised identifiers the gateway also needs to read and create secrets in a vault, and
 to delete none (5.7).
 
-## 7 The gateway's API in Entra ID
+## 7 Entra ID: the gateway's API and the approval page
 
-Register one application for the gateway's API, single tenant:
+**The gateway's API.** One application, single tenant, API only:
 
 - **Access tokens v2:** set `api.requestedAccessTokenVersion` to `2`, so tokens carry the v2
   issuer the gateway checks.
 - **Identifier URI:** `api://<application id>`.
-- **App roles:** one for each role in the mandate's `policy.roles`, plus one for the witness
-  (for example `witness`), allowed for applications or users as each role needs.
-- **A delegated scope** (for example `user_impersonation`) for applications that act for a
-  person, who then submits with their own sign-in (5.1).
-- **The Azure CLI as an authorised client** of that scope (*Expose an API*, *Add a client
-  application*, `04b07795-8ddb-461a-bbee-02f9e1bf7b46`), so the approver signs in to `sheaf-admin`
-  with `az login` (section 11).
-- **Assignment required** on its service principal, then assign each caller its app role: agents
-  and applications by service principal, people through groups, and the witness's identity the
-  `witness` role. An unassigned identity then cannot get a token for the gateway at all.
+- **A delegated scope**, `user_impersonation`, for anything that acts for a person, who then
+  submits with their own sign-in (5.1).
+- **Authorised clients** of that scope (*Expose an API*, *Add a client application*): the
+  approval page's application below, and the Azure CLI
+  (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) for people who run `sheaf-admin` from inside the
+  network.
+- **App roles**, each assigned through a group or to a service principal:
+
+  | Value | Who | May |
+  |---|---|---|
+  | each role in the mandate's `policy.roles`, for example `approver` and `reviewer` | People | The entry types the mandate grants that role, such as `config.changed` |
+  | `proposer` | Engineers and operators; a release pipeline's or a staging host's identity | Stage and withdraw mandate changes, upload their parts and trust files, read proposals (7.6) |
+  | `status` | Operators, the tenant's operations staff, a reader | `GET /v1/status` and nothing else (7.7). Proposers and approvers may read status too |
+  | `witness` | The witness's identity | Submit witnesses |
+  | one for each agent's role, if the mandate grants by role | Applications | As the mandate says |
+
+  Allow each for users or applications as it needs. Name a role by the value the mandate uses:
+  the gateway reads the `roles` claim, never a group's name.
+
+  Give `proposer` only to people and identities you trust with the record. A proposer cannot
+  change what applies without an approver, but what it uploads stays: mandate parts it never
+  proposes are kept for the container's minimum retention, and the first witness key stored
+  under a key ID is the only one that key ID can ever name (a new key version is the way round
+  a wrong one). A proposer can also stage a mandate someone else uploaded; an approver can
+  withdraw it.
+- **Assignment required** on its service principal, so an identity with no role cannot get a
+  token for the gateway at all.
 
 The gateway's `SHEAF_ENTRA_TENANT` is the directory (tenant) ID and `SHEAF_ENTRA_AUDIENCE` is the
 application (client) ID. The witness asks for `api://<application id>/.default`.
+
+**The approval page.** A second application, `acme-sheaf-approve`, single tenant:
+
+- **Platform:** single-page application, with one redirect URI: the page's published address
+  exactly, such as `https://approve.acme.example/` (section 8). No secret, no certificate.
+- **API permissions:** the gateway's `user_impersonation` (delegated), already consented because
+  the gateway authorises this client.
+- **Assignment required** on its service principal, and assign the groups of the people who
+  approve, propose or read status. Nobody else can sign in to the page.
+
+Its application ID is the service's `SHEAF_APPROVE_CLIENT_ID`. The page signs in with the
+authorisation code flow and PKCE, entirely in the browser, and asks for the code in the address's
+fragment, which a browser never sends to a server.
 
 ## 8 Container Apps
 
@@ -310,6 +374,38 @@ A mandate change applies only once it has its interim witness (7.2), so after ea
 az containerapp job start -g <rg> -n acme-sheaf-witness
 ```
 
+**The approval service**, from the same image, with no identity of its own:
+
+```bash
+az containerapp create -g <rg> -n acme-sheaf-approve --environment <environment> \
+  --image ghcr.io/attunesolutions/sheaf@sha256:<digest> \
+  --ingress external --target-port 8080 --min-replicas 1 --max-replicas 2 \
+  --command "sheaf-approve" \
+  --env-vars SHEAF_CHAINS=acme/case-review,acme/claims-triage \
+    SHEAF_GATEWAY_URL=https://<gateway fqdn> \
+    SHEAF_GATEWAY_SCOPE=api://<gateway application id>/user_impersonation \
+    SHEAF_ENTRA_TENANT=<tenant id> \
+    SHEAF_APPROVE_CLIENT_ID=<approval page application id> \
+    SHEAF_APPROVE_URL=https://approve.acme.example/
+```
+
+It keeps nothing, so any replica serves any request. It is always running; who can reach it is
+decided at the proxy, not by starting and stopping it. `SHEAF_APPROVE_URL` is the address people
+use, the same as the redirect URI in section 7. It logs each request's method and path, and each
+approval attempt (who, which proposal, the outcome), never a token or a sign-in code.
+
+**Publishing it.** Approvers reach the page from their own devices, so publish its internal
+address through the tenant's reverse proxy, one of:
+
+- **Pangolin**, with Newt on a host in the network that reaches the service, and Entra ID as
+  Pangolin's identity provider, so the approver signs in once.
+- **Entra Application Proxy**, which pre-authenticates with Entra ID, applies Conditional Access,
+  and needs no inbound port; its connector runs on a host in the network.
+- **Application Gateway with WAF**, or **Front Door Premium over Private Link**.
+
+Whichever: HTTPS only, the address in `SHEAF_APPROVE_URL`, rate limits and country rules at the
+proxy, and only the approval service behind it, never the gateway.
+
 ## 9 Check before you lock
 
 Run the checks of the standard's section 11 in this region, with every policy still unlocked, and
@@ -336,6 +432,16 @@ nothing before its genesis entry. Run them as the workloads' identities, not you
    stop the gateway mid-write; finishing an entry from the journal after a crash is covered by
    the tests and was confirmed on Blob (the standard's section 11).
 
+8. Through the proxy, from outside the network: the approval page loads and signs in; `/api/me`
+   without a token is `401`; a person without the approver role sees a proposal and its
+   fingerprint, but approving it is refused and the chain's head in `GET /v1/status` does not
+   move; and the service's log (`ContainerAppConsoleLogs_CL` for `acme-sheaf-approve`) holds no
+   token (search for `eyJ`, the start of every one) and no `code=`.
+9. `GET /v1/status` answers a token holding the `status` role and refuses one holding no role.
+   It reports the immutability mode the gateway was deployed with; the container's own policy
+   and its period are read with
+   `az storage container immutability-policy show`, which the gateway's role cannot do.
+
 Delete the scratch container when done.
 
 ## 10 Lock
@@ -358,23 +464,30 @@ the resource group too, so nobody removes the network or the vault from under th
 ## 11 Genesis
 
 Each chain's first entry is its genesis `config.changed` (5.6): the chain's mandate and
-everything it names, submitted with the approver's own sign-in. `sheaf-admin` builds it from
-files, checks it offline with the rules the gateway runs, then sends it. Do this once for each
-chain in `SHEAF_CHAINS`, from a machine that reaches the gateway's internal address, with a
-checkout of the release you deployed (`git checkout v<version> && uv sync`).
+everything it names. It is made like every later mandate change (7.6): a proposer stages it, and
+the approver approves it with their own sign-in. `sheaf-admin` builds the mandate from files,
+checks it offline with the rules the gateway runs, and stages it; the approver approves it in the
+approval page (section 8), or with `sheaf-admin approve` from inside the network. Do this once for
+each chain in `SHEAF_CHAINS`.
 
 A genesis cannot be taken back. The container is locked, so a mistake stays in the record for the
 retention period, and a mandate that cannot be witnessed never applies.
 
-1. **Find your identity.** `az login` as the approver, then:
+1. **Find your identity.** `sheaf-admin` runs from a machine that reaches the gateway's internal
+   address, with a checkout of the release you deployed (`git checkout v<version> && uv sync`),
+   or inside the image. It signs in through the Azure CLI (`az login` as yourself), or, where
+   Conditional Access refuses the CLI, as a managed identity on a host or job in the network
+   holding the `proposer` role and the Sheaf witness key reader role (`--credential managed`,
+   with `AZURE_CLIENT_ID`):
 
    ```bash
    uv run sheaf-admin whoami --gateway https://<gateway fqdn> \
      --scope api://<application id>/.default
    ```
 
-   `id` is how entries name you: under clear identifiers your object ID, which is also
-   `SHEAF_BOOTSTRAP_CALLER`; under pseudonymised ones your pseudonym. It is the `approver` below.
+   `id` is how entries name you: under clear identifiers your object ID; under pseudonymised
+   ones your pseudonym. The approver's own `id` is the gateway's `SHEAF_BOOTSTRAP_CALLER` (as an
+   object ID); they can see it on the approval page once signed in.
 
 2. **Write the genesis file**, one folder per chain, beside the files it names:
 
@@ -397,11 +510,10 @@ retention period, and a mandate that cannot be witnessed never applies.
    where the mandate gives a file's SHA-256 you name the file, and the tool computes the digest
    from the bytes it uploads. Authorities are named from the witness's catalogue (the free
    default is `freetsa`, `sectigo` and `digicert`), or written out with `roots` as the paths of
-   their DER certificates.
+   their DER certificates. Nobody is named as approver: whoever approves it is.
 
    ```json
    {
-     "approver": "<your id from whoami>",
      "mandate": {
        "$schema": "sheaf.mandate/1",
        "chain": "acme/case-review",
@@ -424,10 +536,11 @@ retention period, and a mandate that cannot be witnessed never applies.
          },
          "source_capture": "reference",
          "sensitivity": {
-           "client_pii": ["case-reviewer"],
-           "staff_pii": ["case-review-admin"],
-           "none": ["case-reviewer", "case-review-admin"]
-         }
+           "client_pii": ["reviewer"],
+           "staff_pii": ["approver"],
+           "none": ["reviewer", "approver"]
+         },
+         "four_eyes": true
        },
        "instructions": [{"name": "review-instructions", "file": "instructions/review.md"}],
        "schemas": [{"id": "acme.findings/1", "file": "schemas/findings.json"}],
@@ -448,7 +561,7 @@ retention period, and a mandate that cannot be witnessed never applies.
        "authorities": {
          "list": ["freetsa", "sectigo", "digicert"],
          "assessment": {
-           "by": {"kind": "person", "id": "<your id from whoami>"},
+           "by": {"kind": "person", "id": "<the assessor's id, as whoami shows it>"},
            "date": "2026-11-20",
            "statement": "<why no single order or treaty reaches every authority>"
          }
@@ -459,48 +572,61 @@ retention period, and a mandate that cannot be witnessed never applies.
    }
    ```
 
-   Numbers are integers (5.2): a fraction, such as a model's temperature, is a string. A
-   `reason` beside `approver` replaces the default, `genesis`.
+   Numbers are integers (5.2): a fraction, such as a model's temperature, is a string. The roles
+   in `policy.roles` and `policy.sensitivity` are app role values from section 7, never group
+   names. A `reason` beside `mandate` replaces the default, `genesis`.
 
 3. **Check it offline**, and correct it until nothing is reported:
 
    ```bash
-   uv run sheaf-admin genesis check genesis/case-review/genesis.json
+   uv run sheaf-admin check genesis/case-review/genesis.json
    ```
 
    The image you deployed holds the same tool, so the check can also run with exactly that code:
 
    ```bash
    docker run --rm -v "$PWD/genesis/case-review:/genesis:ro" \
-     ghcr.io/attunesolutions/sheaf@sha256:<digest> sheaf-admin genesis check /genesis/genesis.json
+     ghcr.io/attunesolutions/sheaf@sha256:<digest> sheaf-admin check /genesis/genesis.json
    ```
 
-4. **Apply it:**
+4. **Stage it**, as a proposer:
 
    ```bash
-   uv run sheaf-admin genesis apply genesis/case-review/genesis.json \
+   uv run sheaf-admin propose genesis/case-review/genesis.json \
      --gateway https://<gateway fqdn> --scope api://<application id>/.default \
      --key-vault https://<vault>.vault.azure.net
    ```
 
-   It checks again; makes sure you are signed in as a person and as `approver`; makes sure
-   `witness.pem` is the key the vault holds as `key_id`; shows what it will commit and asks you
-   to type the chain name. Then it uploads the mandate, its instructions and its schemas, stores
-   the trust files, and commits the `config.changed`. If it stops partway, run it again: what is
-   stored is kept, and the same bytes are accepted again.
+   It checks again; makes sure `witness.pem` is the key the vault holds as `key_id`, since a
+   mandate whose interim witness can never verify never applies; uploads the mandate, its
+   instructions and its schemas; stores the trust files; and stages the proposal, which the
+   gateway checks against the chain as it will check the genesis itself. It prints the mandate's
+   fingerprint. If it stops partway, run it again: what is stored is kept, and the same bytes are
+   accepted again. The proposal waits 14 days for its approver (`--expires-in-days` to change
+   that).
 
-   Two things only you can check, in what it shows before you type: `witness identity` is the
-   witness job's identity (section 6), or every witness is refused; and `gateway image` is the
-   digest running.
+5. **Approve it**, as the approver: open the approval page, sign in, and read what it shows: the
+   mandate in plain language, and its fingerprint, which should be the one `propose` printed.
+   Two things only a person can check: the witness identity is the witness job's identity
+   (section 6), or every witness is refused; and the gateway image is the digest running. Type
+   the chain name and approve. From a terminal inside the network,
+   `sheaf-admin approve <fingerprint>` shows the same and does the same.
 
-5. **Start the witness job** (section 8). Its interim witness puts the mandate in force, and its
+   Under four eyes the person who staged it cannot approve it, and the page says so.
+
+6. **Start the witness job** (section 8). Its interim witness puts the mandate in force, and its
    log says `acme/case-review: witness committed at seq 2`. Until then the gateway accepts
    nothing else on that chain.
 
 ## 12 Running it
 
-- **A new image** is a mandate change: commit a `config.changed` naming the new digest as
-  `gateway.image`, let it be witnessed, then update the gateway app and the witness job to that
+- **A mandate change** is made as the genesis was (section 11, steps 2 to 6): write the new
+  mandate's file, check it, stage it with `sheaf-admin propose`, approve it, start the witness
+  job. `sheaf-admin proposals` lists what is waiting, and `sheaf-admin withdraw <fingerprint>`
+  takes one back. One change waits for its witness at a time; a proposal staged before another
+  change was committed is superseded, and is staged again against the new mandate.
+- **A new image** is a mandate change naming the new digest as `gateway.image`: let it be
+  witnessed, then update the gateway app, the witness job and the approval service to that
   digest.
 - **A new workflow** is a new chain: add it to `SHEAF_CHAINS` on the gateway and the witness job,
   let the gateway restart, then give it its own genesis (section 11).
@@ -509,17 +635,23 @@ retention period, and a mandate that cannot be witnessed never applies.
 - **A halted gateway** answers `503` after a write failed partway or its lease was lost. Restart
   the revision; it finishes the entry from its journal and carries on.
 - **Watch for:** `503` answers, witness job failures, a day without a daily witness, and Key Vault
-  signatures that do not match the witness job's runs.
+  signatures that do not match the witness job's runs. `GET /v1/status`, under the `status`
+  role, shows a halted chain, an overdue daily witness, a change waiting for its witness and the
+  refusals of the last day; alert on those.
 - **Never** unlock, shorten or delete anything in the `evidence` container. Deletion after expiry
   is a separate, logged step preceded by a `retention.expired` entry (5.7).
 
 ## 13 Not built yet
 
-- **Mandate changes:** `sheaf-admin` makes a chain's genesis only. A later `config.changed`, such
-  as a new image, policy or witness key, is made against the API by hand.
 - **The verifier** (9).
 - **Events to readers** (7.2 step 4): the gateway publishes none yet.
 - **Validators** for `document.pdf`, `document.office`, `document.rendition`, `image.raster` and
   `trace.otel`: an artefact of those kinds is refused with `422 validator_unavailable`.
+- **Alerts** from status: `GET /v1/status` reports, but nothing alerts on it yet. Until then,
+  alert in Log Analytics on the gateway's `halted` and witness job failures.
+- **On the approval page:** staging (`sheaf-admin propose` stages), the reviewer's screen for
+  `decision.recorded`, a status view, and more than one approver for a change.
+- **Reading the record** through the gateway (entries, and artefacts by sensitivity against the
+  viewer's roles, section 8).
 - **Optional parts:** malware scanning (7.4), interim witnesses after `dossier.sealed`, and
   revocation data for tokens.

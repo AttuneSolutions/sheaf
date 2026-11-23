@@ -18,8 +18,18 @@
     GET  /v1/me                   the identity the caller's entries must name
     POST /v1/pseudonyms           {system, object, id}: a subject as entries must name it
 
+    POST   /v1/proposals          {chain, mandate, reason, expires_in_days?}: stage a mandate
+                                  change (7.6) -> 201 (staged) or 200 (already staged)
+    GET    /v1/proposals          ?chain=&status=: the proposals the caller may read, and the
+                                  chains starting or halted, whose proposals it could not read
+    GET    /v1/proposals/{sha256} a proposal, its mandate, the mandate it replaces, and whether
+                                  the caller may approve it
+    DELETE /v1/proposals/{sha256} withdraw it
+    GET    /v1/status             how each chain stands (7.7), for the status role
+
 A rejection is 4xx with {"problems": [{code, path, detail}]}: 401 no caller, 403 not permitted,
-409 an idempotency key or an artefact declared two ways, 413 too large, 422 invalid; 503 when a
+404 no such proposal, 409 an idempotency key or an artefact declared two ways or a proposal not
+pending, 413 too large, 422 invalid; 503 when a
 write failed partway or the chain-head lease was lost, until the gateway restarts, and 503 with
 Retry-After while the chain is starting.
 
@@ -28,7 +38,10 @@ so a gateway replacing another can start beside it; when it stops, it releases t
 """
 
 import hashlib
-from collections.abc import AsyncIterator
+import threading
+import time
+from collections import Counter
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
@@ -42,6 +55,7 @@ from sheaf_core.problems import Problem
 from sheaf_core.trust import MAX_BYTES as TRUST_MAX_BYTES
 from sheaf_gateway.gateway import (
     MAX_ENTRY_BYTES,
+    MAX_PROPOSAL_BYTES,
     MAX_WITNESS_BYTES,
     Gateway,
     Gateways,
@@ -71,9 +85,12 @@ def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse
         lifespan=lifespan,
     )
     app.state.gateway = gateway
+    refusals = Refusals()
 
     @app.exception_handler(Rejected)
     async def rejected(request: Request, error: Rejected) -> JSONResponse:
+        if error.problems:
+            refusals.record(error.problems[0].code)
         shown = error.problems[:MAX_PROBLEMS]
         problems = [{"code": p.code, "path": p.path, "detail": p.detail[:500]} for p in shown]
         if len(error.problems) > MAX_PROBLEMS:
@@ -159,6 +176,45 @@ def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse
         receipt = {"path": f"trust/{path}", "sha256": hashlib.sha256(data).hexdigest()}
         return JSONResponse(receipt, status_code=201 if created else 200)
 
+    @app.post("/v1/proposals")
+    async def stage(request: Request, who: Annotated[Caller, Depends(caller)]) -> JSONResponse:
+        raw = await _read_body(request, MAX_PROPOSAL_BYTES)
+        proposal, created = await run_in_threadpool(
+            gateway.propose, who.id, raw, roles=who.roles, person=who.person
+        )
+        return JSONResponse({"proposal": proposal}, status_code=201 if created else 200)
+
+    @app.get("/v1/proposals")
+    async def proposals(
+        who: Annotated[Caller, Depends(caller)],
+        chain: str | None = None,
+        status: str | None = None,
+    ) -> dict:
+        found = await run_in_threadpool(
+            gateway.proposals, who.id, chain=chain, status=status, roles=who.roles
+        )
+        # A chain that is starting or halted is not read; say so, rather than list it as empty.
+        unavailable = [] if chain is not None else gateway.unavailable()
+        return {"proposals": found, "unavailable": unavailable}
+
+    @app.get("/v1/proposals/{sha256}")
+    async def proposal(sha256: str, who: Annotated[Caller, Depends(caller)]) -> dict:
+        return await run_in_threadpool(
+            gateway.proposal, who.id, sha256, roles=who.roles, person=who.person
+        )
+
+    @app.delete("/v1/proposals/{sha256}")
+    async def withdraw(sha256: str, who: Annotated[Caller, Depends(caller)]) -> dict:
+        found = await run_in_threadpool(
+            gateway.withdraw, who.id, sha256, roles=who.roles, person=who.person
+        )
+        return {"proposal": found}
+
+    @app.get("/v1/status")
+    async def status(who: Annotated[Caller, Depends(caller)]) -> dict:
+        report = await run_in_threadpool(gateway.status, who.id, roles=who.roles)
+        return {**report, "refusals": refusals.counts()}
+
     @app.post("/v1/witnesses")
     async def witness(
         request: Request,
@@ -175,6 +231,46 @@ def create_app(gateway: Gateway | Gateways, authenticate: Authenticator = refuse
 
 
 MAX_PROBLEMS = 50
+
+
+class Refusals:
+    """Requests refused in the last day, counted by the code of their first problem, for status
+    (7.7). Held in memory, as a count per code for each hour, so a flood of one refusal cannot
+    push the others out and memory stays bounded. A restart starts counting again, and says
+    when."""
+
+    WINDOW = 24 * 3600
+    BUCKET = 3600
+
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self._since = clock()
+        self._hours: dict[int, Counter[str]] = {}
+        self._lock = threading.Lock()
+
+    def record(self, code: str) -> None:
+        with self._lock:
+            hour = int(self._clock() // self.BUCKET)
+            self._hours.setdefault(hour, Counter())[code] += 1
+            self._forget(hour)
+
+    def counts(self) -> dict[str, Any]:
+        with self._lock:
+            now = self._clock()
+            self._forget(int(now // self.BUCKET))
+            counted: Counter[str] = Counter()
+            for codes in self._hours.values():
+                counted.update(codes)
+        since = max(self._since, now - self.WINDOW)
+        return {
+            "since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since)),
+            "last_24h": dict(sorted(counted.items())),
+        }
+
+    def _forget(self, hour: int) -> None:
+        oldest = hour - self.WINDOW // self.BUCKET + 1
+        for stale in [h for h in self._hours if h < oldest]:
+            del self._hours[stale]
 
 
 def _parse_json(raw: bytes) -> Any:

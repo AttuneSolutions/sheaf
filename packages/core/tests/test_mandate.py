@@ -224,3 +224,17 @@ def test_a_tenant_schema_id_belongs_to_the_tenant():
     doc["schemas"][0]["id"] = "other.findings/1"
 
     assert codes(check_mandate(doc)) == ["schema_tenant"]
+
+
+def test_sensitivity_names_app_roles_not_group_names():
+    doc = t.mandate_document()
+    doc["policy"]["sensitivity"]["client_pii"] = ["Case Reviewers (London)"]
+
+    assert codes(check_mandate(doc)) == ["schema"]
+
+
+def test_the_policy_says_whether_a_proposer_may_approve():
+    doc = t.mandate_document()
+    del doc["policy"]["four_eyes"]
+
+    assert codes(check_mandate(doc)) == ["schema"]
